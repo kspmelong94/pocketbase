@@ -1,4 +1,4 @@
-﻿// BATTLEZONE 킬내기 - PocketBase 서버 훅 (라우트 + 레코드 훅)
+// BATTLEZONE 킬내기 - PocketBase 서버 훅 (라우트 + 레코드 훅)
 // 주의: PocketBase v0.23+ 는 모든 핸들러를 격리된 컨텍스트로 실행하므로
 // 핸들러 밖에서 선언한 변수/함수에는 접근할 수 없다.
 // 따라서 모든 헬퍼는 bz-lib.js 모듈에서 핸들러 내부에서 require() 로 로드한다.
