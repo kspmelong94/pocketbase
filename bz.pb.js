@@ -1,8 +1,9 @@
-﻿// BATTLEZONE ?щ궡湲?- PocketBase ?쒕쾭 ??(?쇱슦??+ ?덉퐫????
-// 二쇱쓽: PocketBase v0.23+ ??紐⑤뱺 ?몃뱾?щ? 寃⑸━??而⑦뀓?ㅽ듃濡??ㅽ뻾?섎?濡?// ?몃뱾??諛뽰뿉???좎뼵??蹂???⑥닔?먮뒗 ?묎렐?????녿떎.
-// ?곕씪??紐⑤뱺 ?ы띁??bz-lib.js 紐⑤뱢?먯꽌 ?몃뱾???대??먯꽌 require() 濡?濡쒕뱶?쒕떎.
+﻿// BATTLEZONE 킬내기 - PocketBase 서버 훅 (라우트 + 레코드 훅)
+// 주의: PocketBase v0.23+ 는 모든 핸들러를 격리된 컨텍스트로 실행하므로
+// 핸들러 밖에서 선언한 변수/함수에는 접근할 수 없다.
+// 따라서 모든 헬퍼는 bz-lib.js 모듈에서 핸들러 내부에서 require() 로 로드한다.
 
-// ---------- ??----------
+// ---------- 훅 ----------
 
 onRecordCreate((e) => {
   const { BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
@@ -12,7 +13,7 @@ onRecordCreate((e) => {
       BZRunMatchmaking();
     }
   } catch (err) {
-    /* 臾댁떆 */
+    /* 무시 */
   }
 });
 
@@ -25,11 +26,11 @@ onRecordUpdate((e) => {
       if (bid) BZHandleQueueCancel(bid, e.record.getString("user"));
     }
   } catch (err) {
-    /* 臾댁떆 */
+    /* 무시 */
   }
 });
 
-// ---------- ?щ줎: ?쒖꽦 ????먮룞 ?ㅼ틪 (2遺꾨쭏?? ----------
+// ---------- 크론: 활성 대전 자동 스캔 (2분마다) ----------
 
 cronAdd("bz-auto-scan", "*/2 * * * *", () => {
   const { BZAutoScanAll, BZLog } = require(`${__hooks}/bz-lib.js`);
@@ -37,33 +38,34 @@ cronAdd("bz-auto-scan", "*/2 * * * *", () => {
     const result = BZAutoScanAll();
     if (result && typeof result.then === "function") {
       result.then((r) => {
-        if (r && r.busy) BZLog("scan", "?댁쟾 ?ㅼ틪???꾩쭅 ?ㅽ뻾 以묒엯?덈떎.");
-        else if (r && r.ok) BZLog("scan", "?먮룞 ?ㅼ틪 ?꾨즺: " + (r.scanned ?? 0) + "媛????);
+        if (r && r.busy) BZLog("scan", "이전 스캔이 아직 실행 중입니다.");
+        else if (r && r.ok) BZLog("scan", "자동 스캔 완료: " + (r.scanned ?? 0) + "개 대전");
       }).catch((e) => {
-        BZLog("scan", "?먮룞 ?ㅼ틪 ?ㅻ쪟: " + String((e && e.message) || e));
+        BZLog("scan", "자동 스캔 오류: " + String((e && e.message) || e));
       });
     }
   } catch (err) {
-    BZLog("scan", "?먮룞 ?ㅼ틪 ?ㅻ쪟: " + String((err && err.message) || err));
+    BZLog("scan", "자동 스캔 오류: " + String((err && err.message) || err));
   }
 });
 
-// ---------- ?붾뱶?ъ씤??----------
+// ---------- 엔드포인트 ----------
 
-// ?됰꽕???뺤씤 / ???뚯뒪??routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
+// 닉네임 확인 / 키 테스트
+routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
   const { BZAuth, BZBody, BZFindById, BZNow, BZResolvePlayerId, BZ_SHARD, BZ_API } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
   const testMode = body.test === true;
   let key = null;
   if (testMode) {
     if (me.getString("role") !== "operator") {
-      return c.json(403, { message: "?댁쁺???꾩슜?낅땲??" });
+      return c.json(403, { message: "운영자 전용입니다." });
     }
     key = BZFindById("pubg_keys", String(body.keyId || ""));
-    if (!key) return c.json(404, { message: "?ㅻ? 李얠쓣 ???놁뒿?덈떎." });
+    if (!key) return c.json(404, { message: "키를 찾을 수 없습니다." });
   }
 
   if (testMode && key) {
@@ -75,87 +77,87 @@ cronAdd("bz-auto-scan", "*/2 * * * *", () => {
         timeout: 15000,
       });
       if (res.statusCode === 401 || res.statusCode === 403) {
-        return c.json(200, { ok: false, message: "?ㅺ? ?좏슚?섏? ?딆뒿?덈떎." });
+        return c.json(200, { ok: false, message: "키가 유효하지 않습니다." });
       }
       if (res.statusCode === 200) {
         key.set("last_used_at", BZNow());
         key.set("fail_count", 0);
         $app.save(key);
-        return c.json(200, { ok: true, message: "?ㅺ? ?뺤긽 ?숈옉?⑸땲??" });
+        return c.json(200, { ok: true, message: "키가 정상 동작합니다." });
       }
       if (res.statusCode === 429) {
-        return c.json(200, { ok: false, message: "???쒕룄 珥덇낵(429)" });
+        return c.json(200, { ok: false, message: "키 한도 초과(429)" });
       }
-      return c.json(200, { ok: false, message: "PUBG API ?묐떟 " + res.statusCode });
+      return c.json(200, { ok: false, message: "PUBG API 응답 " + res.statusCode });
     } catch (e) {
-      return c.json(200, { ok: false, message: "PUBG API ?곌껐 ?ㅽ뙣" });
+      return c.json(200, { ok: false, message: "PUBG API 연결 실패" });
     }
   }
 
   const nickname = String(body.nickname || "").trim();
-  if (!nickname) return c.json(400, { message: "?됰꽕?꾩씠 ?꾩슂?⑸땲??" });
+  if (!nickname) return c.json(400, { message: "닉네임이 필요합니다." });
   const pid = await BZResolvePlayerId(nickname);
-  if (pid.rateLimited) return c.json(200, { ok: false, message: "PUBG API ?몄텧 ?쒕룄 珥덇낵" });
-  if (pid.notFound) return c.json(200, { ok: false, message: "?됰꽕?꾩쓣 李얠쓣 ???놁뒿?덈떎." });
+  if (pid.rateLimited) return c.json(200, { ok: false, message: "PUBG API 호출 한도 초과" });
+  if (pid.notFound) return c.json(200, { ok: false, message: "닉네임을 찾을 수 없습니다." });
   if (pid.error) return c.json(200, { ok: false, message: pid.error });
   return c.json(200, { ok: true, nickname, playerId: pid.playerId });
 });
 
-// ???利됱떆 ?ㅼ틪 (寃뚯엫 湲곕줉 異붽?/寃利? ??李멸??먯슜 "吏湲??뺤씤" 踰꾪듉
+// 대전 즉시 스캔 (게임 기록 추가/검증) — 참가자용 "지금 확인" 버튼
 routerAdd("POST", "/api/bz/battles/scan", async (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZScanBattle } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
   const battle = BZFindById("kill_battles", String(body.battleId || ""));
-  if (!battle) return c.json(404, { message: "??꾩쓣 李얠쓣 ???놁뒿?덈떎." });
-  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "???李멸??먭? ?꾨떃?덈떎." });
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
 
   const result = await BZScanBattle(battle);
   if (result && result.rateLimited) {
-    return c.json(200, { ok: false, message: "PUBG API ?몄텧 ?쒕룄???꾨떖?덉뒿?덈떎. ?좎떆 ???먮룞?쇰줈 ?ъ떆?꾨맗?덈떎." });
+    return c.json(200, { ok: false, message: "PUBG API 호출 한도에 도달했습니다. 잠시 후 자동으로 재시도됩니다." });
   }
-  return c.json(200, { ok: true, message: "寃뚯엫 湲곕줉???뺤씤?덉뒿?덈떎." });
+  return c.json(200, { ok: true, message: "게임 기록을 확인했습니다." });
 });
 
-// ?뺤궛 (?섎룞 ?ъ떆?꾩슜 ???쒕쾭媛 ?먮룞 ?뺤궛?섎?濡?蹂댁“)
+// 정산 (수동 재시도용 — 서버가 자동 정산하므로 보조)
 routerAdd("POST", "/api/bz/battles/settle", (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZDoSettle } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
   const battle = BZFindById("kill_battles", String(body.battleId || ""));
-  if (!battle) return c.json(404, { message: "??꾩쓣 李얠쓣 ???놁뒿?덈떎." });
-  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "???李멸??먭? ?꾨떃?덈떎." });
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
 
   const result = BZDoSettle(battle);
   if (!result.ok) return c.json(200, { ok: false, ...result });
   return c.json(200, { ok: true, ...result });
 });
 
-// 紐곗닔 ???좉퀬 (?곷? 寃뚯엫 ?쒖옉 誘몄떊怨?
+// 몰수 승 신고 (상대 게임 시작 미신고)
 routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZOpponentOf, BZSettings, BZDoSettle } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
   const battle = BZFindById("kill_battles", String(body.battleId || ""));
-  if (!battle) return c.json(404, { message: "??꾩쓣 李얠쓣 ???놁뒿?덈떎." });
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   const side = BZSideOf(battle, me.id);
-  if (!side) return c.json(403, { message: "???李멸??먭? ?꾨떃?덈떎." });
+  if (!side) return c.json(403, { message: "대전 참가자가 아닙니다." });
   const target = String(body.targetPlayerId || "");
   const opp = BZOpponentOf(battle, me.id);
-  if (target !== opp) return c.json(400, { message: "?곷?媛 ?щ컮瑜댁? ?딆뒿?덈떎." });
+  if (target !== opp) return c.json(400, { message: "상대가 올바르지 않습니다." });
 
   const settings = BZSettings();
   const timeoutMin = Number(settings.getInt("game_start_timeout_min") || 5);
   const timeoutMs = timeoutMin * 60 * 1000;
   const status = battle.getString("status");
 
-  // ?곷?媛 ?ㅼ젣 寃뚯엫 湲곕줉(verified/pending_verify)???④꼈?붿? ?뺤씤
+  // 상대가 실제 게임 기록(verified/pending_verify)을 남겼는지 확인
   const hasOppRecords = () => {
     try {
       const recs = $app.findRecordsByFilter(
@@ -171,33 +173,33 @@ routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
         return s === "verified" || s === "pending_verify";
       });
     } catch (e) {
-      return true; // ?뺤씤 遺덇? ??紐곗닔 遺덇? (?덉쟾)
+      return true; // 확인 불가 시 몰수 불가 (안전)
     }
   };
 
   if (status === "playing") {
     const base = battle.getString("playing_at");
     if (!base) {
-      return c.json(400, { message: "紐곗닔 ??議곌굔???꾨떃?덈떎." });
+      return c.json(400, { message: "몰수 승 조건이 아닙니다." });
     }
     if (hasOppRecords()) {
-      return c.json(400, { message: "?곷?媛 ?대? 寃뚯엫??吏꾪뻾 以묒엯?덈떎. 紐곗닔 ?뱀씠 遺덇??ν빀?덈떎." });
+      return c.json(400, { message: "상대가 이미 게임을 진행 중입니다. 몰수 승이 불가능합니다." });
     }
     if (Date.now() - new Date(base).getTime() < timeoutMs) {
-      return c.json(400, { message: "?꾩쭅 " + timeoutMin + "遺꾩씠 寃쎄낵?섏? ?딆븯?듬땲??" });
+      return c.json(400, { message: "아직 " + timeoutMin + "분이 경과하지 않았습니다." });
     }
   } else if (status === "pending") {
     const mineStarted = side === "a" ? battle.getBool("started_a") : battle.getBool("started_b");
     const theirStarted = side === "a" ? battle.getBool("started_b") : battle.getBool("started_a");
     const base = battle.getString("created");
     if (!mineStarted || theirStarted || !base) {
-      return c.json(400, { message: "?곷?媛 ?쒖옉 ?뺤씤???섏? ?딆븯?듬땲?? " + timeoutMin + "遺?寃쎄낵 ??紐곗닔 ?뱀씠 媛?ν빀?덈떎." });
+      return c.json(400, { message: "상대가 시작 확인을 하지 않았습니다. " + timeoutMin + "분 경과 후 몰수 승이 가능합니다." });
     }
     if (Date.now() - new Date(base).getTime() < timeoutMs) {
-      return c.json(400, { message: "?꾩쭅 " + timeoutMin + "遺꾩씠 寃쎄낵?섏? ?딆븯?듬땲??" });
+      return c.json(400, { message: "아직 " + timeoutMin + "분이 경과하지 않았습니다." });
     }
   } else {
-    return c.json(400, { message: "??꾩씠 吏꾪뻾 以묒씠 ?꾨떃?덈떎." });
+    return c.json(400, { message: "대전이 진행 중이 아닙니다." });
   }
 
   battle.set("winner", me.id);
@@ -209,22 +211,22 @@ routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
     ok: true,
     winner: me.id,
     battleStatus: "forfeit",
-    message: "紐곗닔 ??泥섎━?섏뿀?듬땲??" + (result.ok ? "" : " (?뺤궛 蹂대쪟)"),
+    message: "몰수 승 처리되었습니다." + (result.ok ? "" : " (정산 보류)"),
   });
 });
 
-// ???痍⑥냼 (?湲??곹깭?먯꽌留?
+// 대전 취소 (대기 상태에서만)
 routerAdd("POST", "/api/bz/battles/cancel", (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZOpponentOf, BZFirst } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
   const battle = BZFindById("kill_battles", String(body.battleId || ""));
-  if (!battle) return c.json(404, { message: "??꾩쓣 李얠쓣 ???놁뒿?덈떎." });
-  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "???李멸??먭? ?꾨떃?덈떎." });
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
   if (battle.getString("status") !== "pending") {
-    return c.json(400, { message: "?湲??곹깭????꾨쭔 痍⑥냼?????덉뒿?덈떎." });
+    return c.json(400, { message: "대기 상태의 대전만 취소할 수 있습니다." });
   }
 
   battle.set("status", "cancelled");
@@ -241,24 +243,23 @@ routerAdd("POST", "/api/bz/battles/cancel", (c) => {
       $app.save(oppQueue);
     }
   }
-  return c.json(200, { ok: true, message: "??꾩쓣 痍⑥냼?덉뒿?덈떎." });
+  return c.json(200, { ok: true, message: "대전을 취소했습니다." });
 });
 
-// 留ㅼ묶 ?섎룞 ?몃━嫄?(?댁쁺??
+// 매칭 수동 트리거 (운영자)
 routerAdd("POST", "/api/bz/matchmaking/run", (c) => {
   const { BZAuth, BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
   const matched = BZRunMatchmaking();
   return c.json(200, { ok: true, matched });
 });
 
-// ?ㅻ퀎 ?쒕룄 ?ъ슜??(?댁쁺??
+// 키별 한도 사용량 (운영자)
 routerAdd("GET", "/api/bz/keys/usage", (c) => {
   const { BZAuth, BZRateUsage } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "?몄쬆???꾩슂?⑸땲??" });
-  if (me.getString("role") !== "operator") return c.json(403, { message: "?댁쁺???꾩슜?낅땲??" });
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+  if (me.getString("role") !== "operator") return c.json(403, { message: "운영자 전용입니다." });
   return c.json(200, { ok: true, keys: BZRateUsage() });
 });
-
