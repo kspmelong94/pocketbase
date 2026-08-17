@@ -1,27 +1,20 @@
-// BATTLEZONE 킬내기 - 공용 헬퍼 모듈
-// PocketBase v0.23+ 는 각 핸들러(route/hook)를 별도 격리 프로그램으로 실행하므로,
-// 핸들러 밖에 선언된 함수는 핸들러에서 접근할 수 없다.
-// 따라서 모든 헬퍼를 이 모듈로 옮기고 각 핸들러에서 require() 로 로드한다.
-// (참고: https://pocketbase.io/docs/js-overview/#handlers-scope)
+﻿// BATTLEZONE ?щ궡湲?- 怨듭슜 ?ы띁 紐⑤뱢
+// PocketBase v0.23+ ??媛??몃뱾??route/hook)瑜?蹂꾨룄 寃⑸━ ?꾨줈洹몃옩?쇰줈 ?ㅽ뻾?섎?濡?
+// ?몃뱾??諛뽰뿉 ?좎뼵???⑥닔???몃뱾?ъ뿉???묎렐?????녿떎.
+// ?곕씪??紐⑤뱺 ?ы띁瑜???紐⑤뱢濡???린怨?媛??몃뱾?ъ뿉??require() 濡?濡쒕뱶?쒕떎.
+// (李멸퀬: https://pocketbase.io/docs/js-overview/#handlers-scope)
 
-// ---------- 상수 ----------
+// ---------- ?곸닔 ----------
 
 const BZ_SHARD = "steam";
 const BZ_API = "https://api.pubg.com";
-const BZ_PID_TTL = 30 * 24 * 3600 * 1000; // 플레이어 ID: 30일
-const BZ_LIST_TTL = 60000; // 매치 목록: 60초
-const BZ_MATCH_TTL = 7 * 24 * 3600 * 1000; // 매치 상세: 7일
-// 배틀 시작(시작 확인) 시각과 실제 PUBG 매치 시작 시각은 순서가 뒤바뀔 수 있으므로
-// (매치 참가 후 시작 확인 / 시작 확인 후 참가) 자동 스캔 시 배틀 시작 시각 대비 허용 오차로 사용한다.
-const BZ_VERIFY_TOL_MS = 20 * 60 * 1000; // ±20분
-const BZ_SCAN_MAX_BATTLES = 5; // 크론 틱당 스캔 대전 수
-const BZ_SCAN_MAX_MATCHES = 4; // 플레이어당 틱당 신규 매치 처리 수
-
-// 키 레이트 리미터 (슬라이딩 윈도우 60초/10회)
+const BZ_PID_TTL = 30 * 24 * 3600 * 1000; // ?뚮젅?댁뼱 ID: 30??const BZ_LIST_TTL = 60000; // 留ㅼ튂 紐⑸줉: 60珥?const BZ_MATCH_TTL = 7 * 24 * 3600 * 1000; // 留ㅼ튂 ?곸꽭: 7??// 諛고? ?쒖옉(?쒖옉 ?뺤씤) ?쒓컖怨??ㅼ젣 PUBG 留ㅼ튂 ?쒖옉 ?쒓컖? ?쒖꽌媛 ?ㅻ컮?????덉쑝誘濡?// (留ㅼ튂 李멸? ???쒖옉 ?뺤씤 / ?쒖옉 ?뺤씤 ??李멸?) ?먮룞 ?ㅼ틪 ??諛고? ?쒖옉 ?쒓컖 ?鍮??덉슜 ?ㅼ감濡??ъ슜?쒕떎.
+const BZ_VERIFY_TOL_MS = 20 * 60 * 1000; // 짹20遺?const BZ_SCAN_MAX_BATTLES = 5; // ?щ줎 ?깅떦 ?ㅼ틪 ?????const BZ_SCAN_MAX_MATCHES = 4; // ?뚮젅?댁뼱???깅떦 ?좉퇋 留ㅼ튂 泥섎━ ??
+// ???덉씠??由щ???(?щ씪?대뵫 ?덈룄??60珥?10??
 const BZ_RL_WINDOW_MS = 60000;
 const BZ_RL_MAX_PER_MIN = 10;
 
-// ---------- 기본 유틸 ----------
+// ---------- 湲곕낯 ?좏떥 ----------
 
 function BZBody(c) {
   try {
@@ -29,7 +22,7 @@ function BZBody(c) {
     const b = info && info.body;
     if (b && typeof b === "object") return b;
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
   try {
     const raw = String(c.request.body || "");
@@ -38,11 +31,11 @@ function BZBody(c) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") return parsed;
       } catch (e) {
-        /* 무시 */
+        /* 臾댁떆 */
       }
     }
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
   return {};
 }
@@ -75,10 +68,10 @@ function BZFirst(collection, filter, params) {
 function BZSettings() {
   const rec = BZFirst("game_settings", "");
   if (rec) return rec;
-  // 설정이 없으면 기본값으로 생성
+  // ?ㅼ젙???놁쑝硫?湲곕낯媛믪쑝濡??앹꽦
   const nr = new Record($app.findCollectionByNameOrId("game_settings"));
   nr.set("target_kills", 5);
-  nr.set("season", "시즌 1");
+  nr.set("season", "?쒖쫵 1");
   nr.set("elo_k", 32);
   nr.set("initial_elo", 1200);
   nr.set("match_elo_range", 200);
@@ -100,11 +93,11 @@ function BZLog(kind, message) {
     rec.set("message", message);
     $app.save(rec);
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
 }
 
-// ---------- 캐시 (pubg_cache 컬렉션) ----------
+// ---------- 罹먯떆 (pubg_cache 而щ젆?? ----------
 
 function BZCacheGet(key) {
   try {
@@ -138,15 +131,15 @@ function BZCacheSet(key, payload, ttlMs) {
     rec.set("expires_at", new Date(Date.now() + ttlMs).toISOString());
     $app.save(rec);
   } catch (e) {
-    /* 캐시 실패는 치명적이지 않음 */
+    /* 罹먯떆 ?ㅽ뙣??移섎챸?곸씠吏 ?딆쓬 */
   }
 }
 
-// ---------- 키 레이트 리미터 ----------
+// ---------- ???덉씠??由щ???----------
 
 /**
- * 여유가 있는 키 하나를 획득한다. 전부 소진이면 null.
- * 획득 시 호출 기록을 윈도우에 추가하고 last_used_at 을 갱신한다.
+ * ?ъ쑀媛 ?덈뒗 ???섎굹瑜??띾뱷?쒕떎. ?꾨? ?뚯쭊?대㈃ null.
+ * ?띾뱷 ???몄텧 湲곕줉???덈룄?곗뿉 異붽??섍퀬 last_used_at ??媛깆떊?쒕떎.
  */
 function BZAcquireKey() {
   let keys = [];
@@ -173,7 +166,7 @@ function BZAcquireKey() {
     best.key.set("last_used_at", new Date(now).toISOString());
     $app.save(best.key);
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
   return best.key;
 }
@@ -190,7 +183,7 @@ function BZWindowOf(keyId, now) {
   return fresh;
 }
 
-/** 관리자 UI 용: 키별 현재 윈도우 사용량 조회 */
+/** 愿由ъ옄 UI ?? ?ㅻ퀎 ?꾩옱 ?덈룄???ъ슜??議고쉶 */
 function BZRateUsage() {
   let keys = [];
   try {
@@ -211,7 +204,7 @@ function BZRateUsage() {
 // ---------- PUBG API ----------
 
 /**
- * PUBG API GET 요청. 레이트 리미터를 거친다.
+ * PUBG API GET ?붿껌. ?덉씠??由щ??곕? 嫄곗튇??
  * @returns {{rateLimited?: boolean, error?: string, notFound?: boolean, json?: object}}
  */
 async function BZPubgGet(path) {
@@ -230,7 +223,7 @@ async function BZPubgGet(path) {
     if (res.statusCode === 404) return { notFound: true };
     if (res.statusCode !== 200) {
       if (res.statusCode === 429) return { rateLimited: true };
-      return { error: "PUBG API 오류 " + res.statusCode };
+      return { error: "PUBG API ?ㅻ쪟 " + res.statusCode };
     }
     return { json: res.json || {} };
   } catch (e) {
@@ -238,10 +231,10 @@ async function BZPubgGet(path) {
   }
 }
 
-/** Steam 닉네임 → 플레이어 ID (캐시: 30일) */
+/** Steam ?됰꽕?????뚮젅?댁뼱 ID (罹먯떆: 30?? */
 async function BZResolvePlayerId(nickname) {
   const name = String(nickname || "").trim();
-  if (!name) return { error: "닉네임이 없습니다." };
+  if (!name) return { error: "?됰꽕?꾩씠 ?놁뒿?덈떎." };
   const cacheKey = "pid:" + name.toLowerCase();
   const cached = BZCacheGet(cacheKey);
   if (cached) return { playerId: cached };
@@ -258,7 +251,7 @@ async function BZResolvePlayerId(nickname) {
   return { playerId: data[0].id };
 }
 
-/** 플레이어 최근 매치 ID 목록 (캐시: 60초) */
+/** ?뚮젅?댁뼱 理쒓렐 留ㅼ튂 ID 紐⑸줉 (罹먯떆: 60珥? */
 async function BZRecentMatches(playerId) {
   const cacheKey = "matches:" + playerId;
   const cached = BZCacheGet(cacheKey);
@@ -277,7 +270,7 @@ async function BZRecentMatches(playerId) {
 }
 
 /**
- * 매치 상세 (캐시: 7일).
+ * 留ㅼ튂 ?곸꽭 (罹먯떆: 7??.
  * @returns {{ongoing?: boolean, error?: string, createdAt?: string, killsByPlayer?: object}}
  */
 async function BZMatchDetail(matchId) {
@@ -288,7 +281,7 @@ async function BZMatchDetail(matchId) {
   const res = await BZPubgGet("/shards/" + BZ_SHARD + "/matches/" + matchId);
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) {
-    // 진행 중인 매치: 아직 데이터가 없음 (캐시하지 않음)
+    // 吏꾪뻾 以묒씤 留ㅼ튂: ?꾩쭅 ?곗씠?곌? ?놁쓬 (罹먯떆?섏? ?딆쓬)
     return { ongoing: true };
   }
   if (res.error) return { error: res.error };
@@ -309,7 +302,7 @@ async function BZMatchDetail(matchId) {
   return detail;
 }
 
-// ---------- 대전 상태 처리 ----------
+// ---------- ????곹깭 泥섎━ ----------
 
 function BZSideOf(battle, playerId) {
   if (battle.getString("player_a") === playerId) return "a";
@@ -323,7 +316,7 @@ function BZOpponentOf(battle, playerId) {
   return side === "a" ? battle.getString("player_b") : battle.getString("player_a");
 }
 
-/** 랭킹 레코드 조회(없으면 생성) */
+/** ??궧 ?덉퐫??議고쉶(?놁쑝硫??앹꽦) */
 function BZEnsureRanking(userId, nickname, initialElo) {
   let rec = BZFirst("rankings", "user = {:u}", { u: userId });
   if (rec) return rec;
@@ -338,7 +331,7 @@ function BZEnsureRanking(userId, nickname, initialElo) {
   try {
     $app.save(rec);
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
   return rec;
 }
@@ -349,7 +342,7 @@ function BZNicknameOf(userId) {
   return u.getString("username") || u.getString("name") || u.getString("email") || userId;
 }
 
-/** Elo 계산 (표준 Elo, K 계수) */
+/** Elo 怨꾩궛 (?쒖? Elo, K 怨꾩닔) */
 function BZElo(ra, rb, score, k) {
   const ea = 1 / (1 + Math.pow(10, (rb - ra) / 400));
   const next = Math.round(ra + k * (score - ea));
@@ -363,12 +356,12 @@ function BZStreakOf(prev, won) {
 }
 
 /**
- * 대전 정산: 승패에 따라 Elo 계산 → 랭킹/전적(matches) 갱신.
- * finished / forfeit 상태에서만 동작하며, 이미 정산(finished_at)된 경우 무시한다.
+ * ????뺤궛: ?뱁뙣???곕씪 Elo 怨꾩궛 ????궧/?꾩쟻(matches) 媛깆떊.
+ * finished / forfeit ?곹깭?먯꽌留??숈옉?섎ŉ, ?대? ?뺤궛(finished_at)??寃쎌슦 臾댁떆?쒕떎.
  */
 function BZDoSettle(battle) {
   const status = battle.getString("status");
-  if (status !== "finished" && status !== "forfeit") return { ok: false, message: "정산 가능한 상태가 아닙니다." };
+  if (status !== "finished" && status !== "forfeit") return { ok: false, message: "?뺤궛 媛?ν븳 ?곹깭媛 ?꾨떃?덈떎." };
   if (battle.getString("finished_at")) return { ok: true, already: true };
 
   const settings = BZSettings();
@@ -410,10 +403,10 @@ function BZDoSettle(battle) {
     $app.save(ra);
     $app.save(rb);
   } catch (e) {
-    return { ok: false, message: "랭킹 저장 실패" };
+    return { ok: false, message: "??궧 ????ㅽ뙣" };
   }
 
-  // 전적(matches) 기록
+  // ?꾩쟻(matches) 湲곕줉
   const finishedAt = battle.getString("finished_at") || BZNow();
   const killsA = battle.getInt("kills_a");
   const killsB = battle.getInt("kills_b");
@@ -422,7 +415,7 @@ function BZDoSettle(battle) {
       const m = new Record($app.findCollectionByNameOrId("matches"));
       m.set("player", BZNicknameOf(playerId));
       m.set("date", finishedAt);
-      m.set("map", "킬내기");
+      m.set("map", "?щ궡湲?);
       m.set("mode", "1v1");
       m.set("result", result);
       m.set("score_us", kills);
@@ -439,30 +432,30 @@ function BZDoSettle(battle) {
       mk(winner === pa ? pb : pa, "L", winner === pa ? killsB : killsA, winner === pa ? killsA : killsB);
     }
   } catch (e) {
-    /* 전적 기록 실패는 치명적이지 않음 */
+    /* ?꾩쟻 湲곕줉 ?ㅽ뙣??移섎챸?곸씠吏 ?딆쓬 */
   }
 
   battle.set("elo_delta_a", resA.delta);
   battle.set("elo_delta_b", resB.delta);
   battle.set("finished_at", finishedAt);
-  // forfeit 상태는 유지 (UI/전적 구분용)
+  // forfeit ?곹깭???좎? (UI/?꾩쟻 援щ텇??
   try {
     $app.save(battle);
   } catch (e) {
-    return { ok: false, message: "대전 저장 실패" };
+    return { ok: false, message: "???????ㅽ뙣" };
   }
-  BZLog("settle", "대전 정산: " + pa + " vs " + pb + " (winner=" + winner + ", Δ" + resA.delta + "/" + resB.delta + ")");
+  BZLog("settle", "????뺤궛: " + pa + " vs " + pb + " (winner=" + winner + ", ?" + resA.delta + "/" + resB.delta + ")");
   return { ok: true, winner, eloDeltaA: resA.delta, eloDeltaB: resB.delta };
 }
 
-// ---------- 자동 게임 기록 스캔 ----------
+// ---------- ?먮룞 寃뚯엫 湲곕줉 ?ㅼ틪 ----------
 
 /**
- * 플레이어 1명의 최근 PUBG 매치를 스캔해 kill_rounds 에 기록을 추가한다.
- * - 진행 중 매치(404)  → pending_verify 기록 추가 (다음 틱에서 재확인)
- * - 종료된 매치       → verified 기록 추가 (kills_api = 실제 킬수)
- * - 이미 기록된 매치   → 건너뜀 (중복 방지)
- * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
+ * ?뚮젅?댁뼱 1紐낆쓽 理쒓렐 PUBG 留ㅼ튂瑜??ㅼ틪??kill_rounds ??湲곕줉??異붽??쒕떎.
+ * - 吏꾪뻾 以?留ㅼ튂(404)  ??pending_verify 湲곕줉 異붽? (?ㅼ쓬 ?깆뿉???ы솗??
+ * - 醫낅즺??留ㅼ튂       ??verified 湲곕줉 異붽? (kills_api = ?ㅼ젣 ?ъ닔)
+ * - ?대? 湲곕줉??留ㅼ튂   ??嫄대꼫? (以묐났 諛⑹?)
+ * - 諛고? ?쒖옉 ?댁쟾 留ㅼ튂 ???ㅼ틪 以묐떒 (留ㅼ튂 紐⑸줉? 理쒖떊??
  * @returns {{rateLimited?: boolean}}
  */
 async function BZScanPlayer(battle, playerId) {
@@ -479,7 +472,7 @@ async function BZScanPlayer(battle, playerId) {
   if (list.rateLimited) return { rateLimited: true };
   if (list.error) return { rateLimited: false };
 
-  // 배틀 시작 시각 기준 (시작 확인 완료 시점)
+  // 諛고? ?쒖옉 ?쒓컖 湲곗? (?쒖옉 ?뺤씤 ?꾨즺 ?쒖젏)
   const base = battle.getString("playing_at") || battle.getString("created");
   const baseMs = base ? new Date(base).getTime() : 0;
   const minMs = baseMs ? baseMs - BZ_VERIFY_TOL_MS : 0;
@@ -498,16 +491,16 @@ async function BZScanPlayer(battle, playerId) {
     existing = [];
   }
 
-  // 구식(수동) 기록 정리: match_id 없는 playing/pending_verify → void
+  // 援ъ떇(?섎룞) 湲곕줉 ?뺣━: match_id ?녿뒗 playing/pending_verify ??void
   for (const r of existing) {
     const s = r.getString("status");
     if ((s === "playing" || s === "pending_verify") && !r.getString("match_id")) {
       r.set("status", "void");
-      r.set("note", "자동 기록 전환으로 무효 처리");
+      r.set("note", "?먮룞 湲곕줉 ?꾪솚?쇰줈 臾댄슚 泥섎━");
       try {
         $app.save(r);
       } catch (e) {
-        /* 무시 */
+        /* 臾댁떆 */
       }
     }
   }
@@ -523,7 +516,7 @@ async function BZScanPlayer(battle, playerId) {
     if (mid) recorded.add(mid);
   }
 
-  // 최신 매치부터 스캔
+  // 理쒖떊 留ㅼ튂遺???ㅼ틪
   let scanned = 0;
   for (const matchId of list.ids) {
     if (scanned >= BZ_SCAN_MAX_MATCHES) break;
@@ -534,8 +527,7 @@ async function BZScanPlayer(battle, playerId) {
     if (detail.rateLimited) return { rateLimited: true };
     if (detail.error) continue;
     if (detail.ongoing) {
-      // 진행 중 매치 → 기록 추가 후 다음 틱에서 재확인
-      nextNumber++;
+      // 吏꾪뻾 以?留ㅼ튂 ??湲곕줉 異붽? ???ㅼ쓬 ?깆뿉???ы솗??      nextNumber++;
       const nr = new Record($app.findCollectionByNameOrId("kill_rounds"));
       nr.set("battle", battle.id);
       nr.set("player", playerId);
@@ -544,17 +536,17 @@ async function BZScanPlayer(battle, playerId) {
       nr.set("match_id", matchId);
       nr.set("game_started_at", detail.createdAt || "");
       nr.set("verified_at", BZNow());
-      nr.set("note", "자동 기록 (게임 진행 중)");
+      nr.set("note", "?먮룞 湲곕줉 (寃뚯엫 吏꾪뻾 以?");
       try {
         $app.save(nr);
       } catch (e) {
-        /* 무시 */
+        /* 臾댁떆 */
       }
       recorded.add(matchId);
       continue;
     }
 
-    // 종료된 매치: 배틀 시작 이전(오차 허용) 매치면 이후 목록도 전부 이전 → 중단
+    // 醫낅즺??留ㅼ튂: 諛고? ?쒖옉 ?댁쟾(?ㅼ감 ?덉슜) 留ㅼ튂硫??댄썑 紐⑸줉???꾨? ?댁쟾 ??以묐떒
     const createdMs = detail.createdAt ? new Date(detail.createdAt).getTime() : 0;
     if (minMs && createdMs && createdMs < minMs) break;
     if (!createdMs) continue;
@@ -571,17 +563,17 @@ async function BZScanPlayer(battle, playerId) {
     nr.set("kills_api", kills);
     nr.set("kills_final", kills);
     nr.set("verified_at", BZNow());
-    nr.set("note", "자동 기록");
+    nr.set("note", "?먮룞 湲곕줉");
     try {
       $app.save(nr);
-      BZLog("verify", "자동 기록 추가: " + nickname + " " + kills + "킬 (match=" + matchId + ") battle=" + battle.id);
+      BZLog("verify", "?먮룞 湲곕줉 異붽?: " + nickname + " " + kills + "??(match=" + matchId + ") battle=" + battle.id);
     } catch (e) {
-      /* 무시 */
+      /* 臾댁떆 */
     }
     recorded.add(matchId);
   }
 
-  // pending_verify 기록 재확인 (매치 종료 감지)
+  // pending_verify 湲곕줉 ?ы솗??(留ㅼ튂 醫낅즺 媛먯?)
   for (const r of existing) {
     if (r.getString("status") !== "pending_verify") continue;
     const mid = r.getString("match_id");
@@ -592,13 +584,13 @@ async function BZScanPlayer(battle, playerId) {
 
     const createdMs = detail.createdAt ? new Date(detail.createdAt).getTime() : 0;
     if (minMs && createdMs && createdMs < minMs) {
-      // 배틀 시작 이전에 시작된 매치 → 무효
+      // 諛고? ?쒖옉 ?댁쟾???쒖옉??留ㅼ튂 ??臾댄슚
       r.set("status", "void");
-      r.set("note", "배틀 시작 이전 매치");
+      r.set("note", "諛고? ?쒖옉 ?댁쟾 留ㅼ튂");
       try {
         $app.save(r);
       } catch (e) {
-        /* 무시 */
+        /* 臾댁떆 */
       }
       continue;
     }
@@ -611,16 +603,16 @@ async function BZScanPlayer(battle, playerId) {
     r.set("verified_at", BZNow());
     try {
       $app.save(r);
-      BZLog("verify", "매치 종료 감지 → 검증 확정: " + nickname + " " + kills + "킬 (match=" + mid + ") battle=" + battle.id);
+      BZLog("verify", "留ㅼ튂 醫낅즺 媛먯? ??寃利??뺤젙: " + nickname + " " + kills + "??(match=" + mid + ") battle=" + battle.id);
     } catch (e) {
-      /* 무시 */
+      /* 臾댁떆 */
     }
   }
 
   return { rateLimited: false };
 }
 
-/** verified 기록 킬수 합산으로 배틀 킬수 재계산 (멱등) */
+/** verified 湲곕줉 ?ъ닔 ?⑹궛?쇰줈 諛고? ?ъ닔 ?ш퀎??(硫깅벑) */
 function BZRecomputeKills(battle) {
   let ka = 0;
   let kb = 0;
@@ -643,7 +635,7 @@ function BZRecomputeKills(battle) {
   battle.set("pending_kills_b", 0);
 }
 
-/** 목표 킬수 도달 시 승리 확정 + 정산 */
+/** 紐⑺몴 ?ъ닔 ?꾨떖 ???밸━ ?뺤젙 + ?뺤궛 */
 function BZCheckWin(battle) {
   if (battle.getString("winner")) return;
   const target = battle.getInt("target_kills") || 5;
@@ -653,7 +645,7 @@ function BZCheckWin(battle) {
 
   let winner = null;
   if (ka >= target && kb >= target) {
-    // 동시 도달(이론상): 킬수가 많은 쪽, 같으면 A
+    // ?숈떆 ?꾨떖(?대줎??: ?ъ닔媛 留롮? 履? 媛숈쑝硫?A
     winner = ka >= kb ? battle.getString("player_a") : battle.getString("player_b");
   } else {
     winner = ka >= target ? battle.getString("player_a") : battle.getString("player_b");
@@ -667,19 +659,19 @@ function BZCheckWin(battle) {
     return;
   }
   const settled = BZDoSettle(battle);
-  BZLog("verify", "목표 달성 승리: " + winner + " (" + ka + " vs " + kb + ") battle=" + battle.id +
-    (settled.ok ? "" : " 정산 보류"));
+  BZLog("verify", "紐⑺몴 ?ъ꽦 ?밸━: " + winner + " (" + ka + " vs " + kb + ") battle=" + battle.id +
+    (settled.ok ? "" : " ?뺤궛 蹂대쪟"));
 }
 
-/** 대전 1건 스캔 (양쪽) */
+/** ???1嫄??ㅼ틪 (?묒そ) */
 async function BZScanBattle(battle) {
-  // 레거시 settling 대전: 승자가 확정된 상태면 즉시 종료
+  // ?덇굅??settling ??? ?뱀옄媛 ?뺤젙???곹깭硫?利됱떆 醫낅즺
   if (battle.getString("status") === "settling" && battle.getString("winner")) {
     battle.set("status", "finished");
     try {
       $app.save(battle);
     } catch (e) {
-      /* 무시 */
+      /* 臾댁떆 */
     }
     BZDoSettle(battle);
     return { rateLimited: false };
@@ -695,13 +687,13 @@ async function BZScanBattle(battle) {
   try {
     $app.save(battle);
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
   BZCheckWin(battle);
   return { rateLimited: false };
 }
 
-/** 활성 대전 전체 자동 스캔 (크론용) */
+/** ?쒖꽦 ????꾩껜 ?먮룞 ?ㅼ틪 (?щ줎?? */
 async function BZAutoScanAll() {
   if ($app.store().get("bz_scan_busy")) return { ok: false, busy: true };
   $app.store().set("bz_scan_busy", true);
@@ -730,19 +722,18 @@ async function BZAutoScanAll() {
   }
 }
 
-// ---------- 매치메이킹 ----------
+// ---------- 留ㅼ튂硫붿씠??----------
 
 /**
- * 대기열에서 Elo 차이 최소 쌍을 찾아 대전을 생성한다. (동기 실행 — 원자적)
- * @returns {number} 성사된 대전 수
- */
+ * ?湲곗뿴?먯꽌 Elo 李⑥씠 理쒖냼 ?띿쓣 李얠븘 ??꾩쓣 ?앹꽦?쒕떎. (?숆린 ?ㅽ뻾 ???먯옄??
+ * @returns {number} ?깆궗??????? */
 function BZRunMatchmaking() {
   if ($app.store().get("bz_mm_busy")) return 0;
   $app.store().set("bz_mm_busy", true);
   try {
     const settings = BZSettings();
     if (!settings || settings.getBool("matching_enabled") === false) return 0;
-    const season = settings.getString("season") || "시즌 1";
+    const season = settings.getString("season") || "?쒖쫵 1";
     const range = Number(settings.getInt("match_elo_range") || 200);
 
     let waiting = [];
@@ -798,18 +789,18 @@ function BZRunMatchmaking() {
     best.b.set("battle_id", battle.id);
     $app.save(best.b);
 
-    BZLog("match", "매칭 성사: " + best.a.getString("user") + " vs " + best.b.getString("user") +
+    BZLog("match", "留ㅼ묶 ?깆궗: " + best.a.getString("user") + " vs " + best.b.getString("user") +
       " (Elo " + best.a.getInt("elo") + " / " + best.b.getInt("elo") + ")");
     return 1;
   } catch (e) {
-    BZLog("match", "매칭 실패: " + String((e && e.message) || e));
+    BZLog("match", "留ㅼ묶 ?ㅽ뙣: " + String((e && e.message) || e));
     return 0;
   } finally {
     $app.store().set("bz_mm_busy", false);
   }
 }
 
-/** 대기열 취소 시 대기(pending) 대전 취소 + 상대 큐 복귀 */
+/** ?湲곗뿴 痍⑥냼 ???湲?pending) ???痍⑥냼 + ?곷? ??蹂듦? */
 function BZHandleQueueCancel(battleId, userId) {
   const battle = BZFindById("kill_battles", battleId);
   if (!battle) return;
@@ -829,13 +820,13 @@ function BZHandleQueueCancel(battleId, userId) {
         $app.save(oppQueue);
       }
     }
-    BZLog("match", "대전 취소(대기열 이탈): " + battleId);
+    BZLog("match", "???痍⑥냼(?湲곗뿴 ?댄깉): " + battleId);
   } catch (e) {
-    /* 무시 */
+    /* 臾댁떆 */
   }
 }
 
-// ---------- 모듈 내보내기 ----------
+// ---------- 紐⑤뱢 ?대낫?닿린 ----------
 
 module.exports = {
   BZ_SHARD: BZ_SHARD,
@@ -877,3 +868,4 @@ module.exports = {
   BZRunMatchmaking: BZRunMatchmaking,
   BZHandleQueueCancel: BZHandleQueueCancel,
 };
+
