@@ -280,27 +280,33 @@ async function BZRecentMatches(playerId, range) {
   const cached = BZCacheGet(cacheKey);
   if (cached && Array.isArray(cached)) return { ids: cached };
 
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
   let query = "";
   if (startMs > 0 && endMs > 0 && endMs > startMs) {
-    const q = [
-      "filter%5BcreatedAt-start%5D=" + encodeURIComponent(new Date(startMs).toISOString()),
-      "filter%5BcreatedAt-end%5D=" + encodeURIComponent(new Date(endMs).toISOString()),
-    ];
-    query = "?" + q.join("&");
+    query = "?filter%5BcreatedAt-start%5D=" + encodeURIComponent(iso(startMs)) +
+      "&filter%5BcreatedAt-end%5D=" + encodeURIComponent(iso(endMs));
   }
   let res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches" + query);
+  let usedFallback = false;
   if ((res.error || res.notFound) && query) {
-    // 시각 필터 미지원 등에 대비해 필터 없이 재시도
+    usedFallback = true;
+    BZLog("scan", "매치 목록 시각 필터 실패 (" + (res.error || "404") + "), 필터 없이 재시도 (player=" + playerId + ")");
     res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches");
   }
   if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
-  if (res.notFound) return { ids: [] };
+  if (res.notFound) {
+    BZLog("scan", "매치 목록 404 (player=" + playerId + ")");
+    return { ids: [] };
+  }
   if (res.error) return { error: res.error };
   const list = (res.json && res.json.data && res.json.data[0] && res.json.data[0].relationships &&
     res.json.data[0].relationships.matches &&
     res.json.data[0].relationships.matches.data) || [];
   const ids = list.map((m) => m.id).filter(Boolean);
+  if (!ids.length) {
+    BZLog("scan", "매치 0개 (player=" + playerId + (query ? ", 필터=" + query : ", 무필터") + (usedFallback ? ", 필터 실패 후 재시도" : "") + ") 응답: " + JSON.stringify(res.json || {}).substring(0, 300));
+  }
   BZCacheSet(cacheKey, ids, BZ_LIST_TTL);
   return { ids };
 }
