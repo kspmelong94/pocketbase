@@ -303,10 +303,13 @@ async function BZRecentMatches(playerId) {
 
 /**
  * 매치 상세 (캐시: 7일).
- * @returns {{ongoing?: boolean, error?: string, createdAt?: string, mapName?: string, killsByPlayer?: object, placementByPlayer?: object}}
+ * 공식 스키마 기준: participant는 attributes.stats.playerId(계정 ID) / attributes.stats.name(IGN)으로 매칭.
+ * relationships.player.data.id는 실제 응답에 따라 있을 수도 있어 보조로 사용.
+ * @returns {{ongoing?: boolean, error?: string, createdAt?: string, mapName?: string, killsByPlayer?: object, placementByPlayer?: object, killsByNickname?: object, placementByNickname?: object, participantCount?: number}}
  */
 async function BZMatchDetail(matchId) {
-  const cacheKey = "match:" + matchId;
+  // v2: 구버전 캐시(맵/등수 없음) 무효화를 위해 키 버전 변경
+  const cacheKey = "match:v2:" + matchId;
   const cached = BZCacheGet(cacheKey);
   if (cached) return cached;
 
@@ -325,17 +328,49 @@ async function BZMatchDetail(matchId) {
   const mapName = d && d.attributes && d.attributes.mapName;
   const killsByPlayer = {};
   const placementByPlayer = {};
+  const killsByNickname = {};
+  const placementByNickname = {};
+  let participantCount = 0;
   for (const inc of included) {
-    if (inc.type === "participant" && inc.attributes && inc.attributes.stats &&
-      inc.relationships && inc.relationships.player && inc.relationships.player.data) {
-      const pid = inc.relationships.player.data.id;
-      killsByPlayer[pid] = Number(inc.attributes.stats.kills || 0);
-      placementByPlayer[pid] = Number(inc.attributes.stats.winPlace || 0);
+    if (inc.type !== "participant" || !inc.attributes || !inc.attributes.stats) continue;
+    participantCount++;
+    const stats = inc.attributes.stats;
+    const pid = (inc.relationships && inc.relationships.player && inc.relationships.player.data &&
+      inc.relationships.player.data.id) || stats.playerId;
+    const kills = Number(stats.kills || 0);
+    const placement = Number(stats.winPlace || 0);
+    if (pid) {
+      killsByPlayer[pid] = kills;
+      placementByPlayer[pid] = placement;
+    }
+    if (stats.name) {
+      killsByNickname[String(stats.name).toLowerCase()] = kills;
+      placementByNickname[String(stats.name).toLowerCase()] = placement;
     }
   }
-  const detail = { createdAt, mapName, killsByPlayer, placementByPlayer };
+  const detail = { createdAt, mapName, killsByPlayer, placementByPlayer, killsByNickname, placementByNickname, participantCount };
   BZCacheSet(cacheKey, detail, BZ_MATCH_TTL);
   return detail;
+}
+
+/**
+ * 매치 상세에서 해당 플레이어의 킬수/등수 추출. 계정 ID → 닉네임 순으로 매칭.
+ * @returns {{kills: number, placement: number, matched: boolean}}
+ */
+function BZPlayerMatchStats(detail, playerId, nickname) {
+  const key = String(playerId || "");
+  const nk = String(nickname || "").toLowerCase();
+  const kp = detail.killsByPlayer || {};
+  const pp = detail.placementByPlayer || {};
+  const kn = detail.killsByNickname || {};
+  const pn = detail.placementByNickname || {};
+  if (key in kp || key in pp) {
+    return { kills: Number(kp[key] || 0), placement: Number(pp[key] || 0), matched: true };
+  }
+  if (nk in kn || nk in pn) {
+    return { kills: Number(kn[nk] || 0), placement: Number(pn[nk] || 0), matched: true };
+  }
+  return { kills: 0, placement: 0, matched: false };
 }
 
 // ---------- 대전 상태 처리 ----------
@@ -611,8 +646,12 @@ async function BZScanPlayer(battle, playerId) {
       continue;
     }
 
-    const kills = detail.killsByPlayer ? Number(detail.killsByPlayer[pid.playerId] || 0) : 0;
-    const placement = detail.placementByPlayer ? Number(detail.placementByPlayer[pid.playerId] || 0) : 0;
+    const stats = BZPlayerMatchStats(detail, pid.playerId, nickname);
+    if (!stats.matched && detail.participantCount > 0) {
+      BZLog("scan", "참가자 매칭 실패: " + nickname + " (match=" + matchId + ", 참가자 " + detail.participantCount + "명) battle=" + battle.id);
+    }
+    const kills = stats.kills;
+    const placement = stats.placement;
     nextNumber++;
     const nr = new Record($app.findCollectionByNameOrId("kill_rounds"));
     nr.set("battle", battle.id);
@@ -661,14 +700,16 @@ async function BZScanPlayer(battle, playerId) {
       continue;
     }
 
-    const kills = detail.killsByPlayer ? Number(detail.killsByPlayer[pid.playerId] || 0) : 0;
-    const placement = detail.placementByPlayer ? Number(detail.placementByPlayer[pid.playerId] || 0) : 0;
+    const stats = BZPlayerMatchStats(detail, pid.playerId, nickname);
+    if (!stats.matched && detail.participantCount > 0) {
+      BZLog("scan", "참가자 매칭 실패: " + nickname + " (match=" + matchId + ", 참가자 " + detail.participantCount + "명) battle=" + battle.id);
+    }
     r.set("status", "verified");
-    r.set("kills_api", kills);
-    r.set("kills_final", kills);
+    r.set("kills_api", stats.kills);
+    r.set("kills_final", stats.kills);
     r.set("game_started_at", detail.createdAt || r.getString("game_started_at") || "");
     r.set("map", detail.mapName || r.getString("map") || "");
-    r.set("placement", placement || r.getInt("placement") || 0);
+    r.set("placement", stats.placement || r.getInt("placement") || 0);
     r.set("verified_at", BZNow());
     try {
       $app.save(r);
