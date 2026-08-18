@@ -303,7 +303,7 @@ async function BZRecentMatches(playerId) {
 
 /**
  * 매치 상세 (캐시: 7일).
- * @returns {{ongoing?: boolean, error?: string, createdAt?: string, killsByPlayer?: object}}
+ * @returns {{ongoing?: boolean, error?: string, createdAt?: string, mapName?: string, killsByPlayer?: object, placementByPlayer?: object}}
  */
 async function BZMatchDetail(matchId) {
   const cacheKey = "match:" + matchId;
@@ -322,15 +322,18 @@ async function BZMatchDetail(matchId) {
   const d = res.json && res.json.data;
   const included = (res.json && res.json.included) || [];
   const createdAt = d && d.attributes && d.attributes.createdAt;
+  const mapName = d && d.attributes && d.attributes.mapName;
   const killsByPlayer = {};
+  const placementByPlayer = {};
   for (const inc of included) {
     if (inc.type === "participant" && inc.attributes && inc.attributes.stats &&
       inc.relationships && inc.relationships.player && inc.relationships.player.data) {
       const pid = inc.relationships.player.data.id;
       killsByPlayer[pid] = Number(inc.attributes.stats.kills || 0);
+      placementByPlayer[pid] = Number(inc.attributes.stats.winPlace || 0);
     }
   }
-  const detail = { createdAt, killsByPlayer };
+  const detail = { createdAt, mapName, killsByPlayer, placementByPlayer };
   BZCacheSet(cacheKey, detail, BZ_MATCH_TTL);
   return detail;
 }
@@ -581,6 +584,7 @@ async function BZScanPlayer(battle, playerId) {
       nr.set("status", "pending_verify");
       nr.set("match_id", matchId);
       nr.set("game_started_at", detail.createdAt || "");
+      nr.set("map", detail.mapName || "");
       nr.set("verified_at", BZNow());
       nr.set("note", "자동 기록 (게임 진행 중)");
       try {
@@ -608,6 +612,7 @@ async function BZScanPlayer(battle, playerId) {
     }
 
     const kills = detail.killsByPlayer ? Number(detail.killsByPlayer[pid.playerId] || 0) : 0;
+    const placement = detail.placementByPlayer ? Number(detail.placementByPlayer[pid.playerId] || 0) : 0;
     nextNumber++;
     const nr = new Record($app.findCollectionByNameOrId("kill_rounds"));
     nr.set("battle", battle.id);
@@ -616,6 +621,8 @@ async function BZScanPlayer(battle, playerId) {
     nr.set("status", "verified");
     nr.set("match_id", matchId);
     nr.set("game_started_at", detail.createdAt);
+    nr.set("map", detail.mapName || "");
+    nr.set("placement", placement);
     nr.set("kills_api", kills);
     nr.set("kills_final", kills);
     nr.set("verified_at", BZNow());
@@ -655,10 +662,13 @@ async function BZScanPlayer(battle, playerId) {
     }
 
     const kills = detail.killsByPlayer ? Number(detail.killsByPlayer[pid.playerId] || 0) : 0;
+    const placement = detail.placementByPlayer ? Number(detail.placementByPlayer[pid.playerId] || 0) : 0;
     r.set("status", "verified");
     r.set("kills_api", kills);
     r.set("kills_final", kills);
     r.set("game_started_at", detail.createdAt || r.getString("game_started_at") || "");
+    r.set("map", detail.mapName || r.getString("map") || "");
+    r.set("placement", placement || r.getInt("placement") || 0);
     r.set("verified_at", BZNow());
     try {
       $app.save(r);
