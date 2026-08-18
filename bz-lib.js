@@ -11,6 +11,7 @@ const BZ_API = "https://api.pubg.com";
 const BZ_PID_TTL = 30 * 24 * 3600 * 1000; // 플레이어 ID: 30일
 const BZ_LIST_TTL = 60000; // 매치 목록: 60초
 const BZ_MATCH_TTL = 7 * 24 * 3600 * 1000; // 매치 상세: 7일
+const BZ_ONGOING_TTL = 3 * 60 * 1000; // 진행 중 매치(404) 재조회 간격: 3분
 // 배틀 시작(시작 확인) 시각과 실제 PUBG 매치 시작 시각은 순서가 뒤바뀔 수 있으므로
 // (매치 참가 후 시작 확인 / 시작 확인 후 참가) 자동 스캔 시 배틀 시작 시각 대비 허용 오차로 사용한다.
 const BZ_VERIFY_TOL_MS = 20 * 60 * 1000; // ±20분
@@ -317,7 +318,8 @@ async function BZMatchDetail(matchId) {
   if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) {
-    // 진행 중인 매치: 아직 데이터가 없음 (캐시하지 않음)
+    // 진행 중인 매치: 아직 데이터가 없음. 짧은 TTL로 캐시해 틱마다 재호출 방지
+    BZCacheSet(cacheKey, { ongoing: true }, BZ_ONGOING_TTL);
     return { ongoing: true };
   }
   if (res.error) return { error: res.error };
@@ -826,6 +828,100 @@ async function BZScanBattle(battle) {
   return { rateLimited: false, players };
 }
 
+/**
+ * 주기 정리 (크론 틱에서 호출, 스토어 스로틀로 30분 간격 실행).
+ * - pubg_cache : 만료/30일 초과 행 삭제 + 키 중복 행 정리 (UNIQUE 인덱스 대비)
+ * - admin_logs : 최근 3000건 초과 시 오래된 행 삭제
+ * - kill_queue : cancelled/matched 7일 초과 행 삭제
+ */
+function BZMaintenance() {
+  try {
+    const now = Date.now();
+    const last = Number($app.store().get("bz_maint_last") || 0);
+    if (now - last < 30 * 60 * 1000) return;
+    $app.store().set("bz_maint_last", now);
+  } catch (e) {
+    return;
+  }
+
+  try {
+    // 1) pubg_cache 정리
+    const cacheRows = $app.findRecordsByFilter(
+      "pubg_cache",
+      "expires_at < {:t} || created < {:c}",
+      "created",
+      2000,
+      0,
+      { t: BZNow(), c: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() }
+    );
+    for (const r of cacheRows) {
+      try {
+        $app.delete(r);
+      } catch (e) {
+        /* 무시 */
+      }
+    }
+    // 키 중복 행 정리 (첫 행 유지)
+    const seen = {};
+    const allCache = $app.findRecordsByFilter("pubg_cache", "", "created", 5000, 0);
+    for (const r of allCache) {
+      const k = r.getString("key");
+      if (!k) continue;
+      if (seen[k]) {
+        try {
+          $app.delete(r);
+        } catch (e) {
+          /* 무시 */
+        }
+      } else {
+        seen[k] = true;
+      }
+    }
+  } catch (e) {
+    /* 무시 */
+  }
+
+  try {
+    // 2) admin_logs: 최근 3000건 유지
+    const maxLogs = 3000;
+    const total = $app.countRecords("admin_logs");
+    if (total > maxLogs) {
+      const excess = Math.min(total - maxLogs, 1000);
+      const old = $app.findRecordsByFilter("admin_logs", "", "created", excess, 0);
+      for (const r of old) {
+        try {
+          $app.delete(r);
+        } catch (e) {
+          /* 무시 */
+        }
+      }
+    }
+  } catch (e) {
+    /* 무시 */
+  }
+
+  try {
+    // 3) kill_queue: cancelled/matched 7일 초과 삭제
+    const oldQueues = $app.findRecordsByFilter(
+      "kill_queue",
+      "(status = 'cancelled' || status = 'matched') && created < {:c}",
+      "created",
+      2000,
+      0,
+      { c: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString() }
+    );
+    for (const r of oldQueues) {
+      try {
+        $app.delete(r);
+      } catch (e) {
+        /* 무시 */
+      }
+    }
+  } catch (e) {
+    /* 무시 */
+  }
+}
+
 /** 활성 대전 전체 자동 스캔 (크론용) */
 async function BZAutoScanAll() {
   if ($app.store().get("bz_scan_busy")) return { ok: false, busy: true };
@@ -1006,6 +1102,7 @@ module.exports = {
   BZCheckWin: BZCheckWin,
   BZScanBattle: BZScanBattle,
   BZAutoScanAll: BZAutoScanAll,
+  BZMaintenance: BZMaintenance,
   BZRunMatchmaking: BZRunMatchmaking,
   BZHandleQueueCancel: BZHandleQueueCancel,
 };

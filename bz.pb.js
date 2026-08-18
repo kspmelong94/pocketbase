@@ -30,10 +30,15 @@ onRecordUpdate((e) => {
   }
 });
 
-// ---------- 크론: 활성 대전 자동 스캔 (2분마다) ----------
+// ---------- 크론: 활성 대전 자동 스캔 (2분마다) + 주기 정리 ----------
 
 cronAdd("bz-auto-scan", "*/2 * * * *", () => {
-  const { BZAutoScanAll, BZLog } = require(`${__hooks}/bz-lib.js`);
+  const { BZAutoScanAll, BZMaintenance, BZLog } = require(`${__hooks}/bz-lib.js`);
+  try {
+    BZMaintenance();
+  } catch (err) {
+    /* 무시 */
+  }
   try {
     const result = BZAutoScanAll();
     if (result && typeof result.then === "function") {
