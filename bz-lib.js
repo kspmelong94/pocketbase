@@ -144,6 +144,16 @@ function BZCacheSet(key, payload, ttlMs) {
 
 // ---------- 키 레이트 리미터 ----------
 
+/** 등록된 사용 가능 키 존재 여부 (키 미등록과 한도 소진을 구분하기 위함) */
+function BZHasEnabledKeys() {
+  try {
+    const keys = $app.findRecordsByFilter("pubg_keys", "enabled = true", "label", 1, 0);
+    return Boolean(keys && keys.length);
+  } catch (e) {
+    return false;
+  }
+}
+
 /**
  * 여유가 있는 키 하나를 획득한다. 전부 소진이면 null.
  * 획득 시 호출 기록을 윈도우에 추가하고 last_used_at 을 갱신한다.
@@ -212,11 +222,13 @@ function BZRateUsage() {
 
 /**
  * PUBG API GET 요청. 레이트 리미터를 거친다.
- * @returns {{rateLimited?: boolean, error?: string, notFound?: boolean, json?: object}}
+ * @returns {{rateLimited?: boolean, noKeys?: boolean, error?: string, notFound?: boolean, json?: object}}
  */
 async function BZPubgGet(path) {
   const key = BZAcquireKey();
-  if (!key) return { rateLimited: true };
+  if (!key) {
+    return BZHasEnabledKeys() ? { rateLimited: true } : { noKeys: true };
+  }
   try {
     const res = await $http.send({
       url: BZ_API + path,
@@ -249,6 +261,7 @@ async function BZResolvePlayerId(nickname) {
   const res = await BZPubgGet(
     "/shards/" + BZ_SHARD + "/players?filter%5BplayerNames%5D=" + encodeURIComponent(name)
   );
+  if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) return { notFound: true };
   if (res.error) return { error: res.error };
@@ -265,6 +278,7 @@ async function BZRecentMatches(playerId) {
   if (cached && Array.isArray(cached)) return { ids: cached };
 
   const res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches");
+  if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) return { ids: [] };
   if (res.error) return { error: res.error };
@@ -286,6 +300,7 @@ async function BZMatchDetail(matchId) {
   if (cached) return cached;
 
   const res = await BZPubgGet("/shards/" + BZ_SHARD + "/matches/" + matchId);
+  if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) {
     // 진행 중인 매치: 아직 데이터가 없음 (캐시하지 않음)
@@ -463,7 +478,7 @@ function BZDoSettle(battle) {
  * - 종료된 매치       → verified 기록 추가 (kills_api = 실제 킬수)
  * - 이미 기록된 매치   → 건너뜀 (중복 방지)
  * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
- * @returns {{rateLimited?: boolean}}
+ * @returns {{rateLimited?: boolean, noKeys?: boolean}}
  */
 async function BZScanPlayer(battle, playerId) {
   const user = BZFindById("users", playerId);
@@ -472,10 +487,12 @@ async function BZScanPlayer(battle, playerId) {
   if (!nickname) return { rateLimited: false };
 
   const pid = await BZResolvePlayerId(nickname);
+  if (pid.noKeys) return { noKeys: true };
   if (pid.rateLimited) return { rateLimited: true };
   if (pid.notFound || pid.error) return { rateLimited: false };
 
   const list = await BZRecentMatches(pid.playerId);
+  if (list.noKeys) return { noKeys: true };
   if (list.rateLimited) return { rateLimited: true };
   if (list.error) return { rateLimited: false };
 
@@ -531,6 +548,7 @@ async function BZScanPlayer(battle, playerId) {
     scanned++;
 
     const detail = await BZMatchDetail(matchId);
+    if (detail.noKeys) return { noKeys: true };
     if (detail.rateLimited) return { rateLimited: true };
     if (detail.error) continue;
     if (detail.ongoing) {
@@ -587,6 +605,7 @@ async function BZScanPlayer(battle, playerId) {
     const mid = r.getString("match_id");
     if (!mid) continue;
     const detail = await BZMatchDetail(mid);
+    if (detail.noKeys) return { noKeys: true };
     if (detail.rateLimited) return { rateLimited: true };
     if (detail.error || detail.ongoing) continue;
 
@@ -687,8 +706,10 @@ async function BZScanBattle(battle) {
   if (battle.getString("status") !== "playing") return { rateLimited: false };
 
   const ra = await BZScanPlayer(battle, battle.getString("player_a"));
+  if (ra.noKeys) return { noKeys: true };
   if (ra.rateLimited) return { rateLimited: true };
   const rb = await BZScanPlayer(battle, battle.getString("player_b"));
+  if (rb.noKeys) return { noKeys: true };
   if (rb.rateLimited) return { rateLimited: true };
 
   BZRecomputeKills(battle);
@@ -721,6 +742,10 @@ async function BZAutoScanAll() {
     let scanned = 0;
     for (const battle of battles) {
       const res = await BZScanBattle(battle);
+      if (res.noKeys) {
+        BZLog("scan", "자동 스캔 중단: 등록된 PUBG API 키가 없습니다. 관리자 설정에서 등록해 주세요.");
+        break;
+      }
       if (res.rateLimited) break;
       scanned++;
     }
@@ -856,6 +881,7 @@ module.exports = {
   BZCacheGet: BZCacheGet,
   BZCacheSet: BZCacheSet,
   BZAcquireKey: BZAcquireKey,
+  BZHasEnabledKeys: BZHasEnabledKeys,
   BZWindowOf: BZWindowOf,
   BZRateUsage: BZRateUsage,
   BZPubgGet: BZPubgGet,

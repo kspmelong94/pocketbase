@@ -97,6 +97,7 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
   const nickname = String(body.nickname || "").trim();
   if (!nickname) return c.json(400, { message: "닉네임이 필요합니다." });
   const pid = await BZResolvePlayerId(nickname);
+  if (pid.noKeys) return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않았습니다. 관리자 설정에서 등록해 주세요." });
   if (pid.rateLimited) return c.json(200, { ok: false, message: "PUBG API 호출 한도 초과" });
   if (pid.notFound) return c.json(200, { ok: false, message: "닉네임을 찾을 수 없습니다." });
   if (pid.error) return c.json(200, { ok: false, message: pid.error });
@@ -115,6 +116,9 @@ routerAdd("POST", "/api/bz/battles/scan", async (c) => {
   if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
 
   const result = await BZScanBattle(battle);
+  if (result && result.noKeys) {
+    return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않아 게임 기록을 확인할 수 없습니다. 관리자에게 문의해 주세요." });
+  }
   if (result && result.rateLimited) {
     return c.json(200, { ok: false, message: "PUBG API 호출 한도에 도달했습니다. 잠시 후 자동으로 재시도됩니다." });
   }
