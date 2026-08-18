@@ -478,23 +478,24 @@ function BZDoSettle(battle) {
  * - 종료된 매치       → verified 기록 추가 (kills_api = 실제 킬수)
  * - 이미 기록된 매치   → 건너뜀 (중복 방지)
  * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
- * @returns {{rateLimited?: boolean, noKeys?: boolean}}
+ * @returns {{rateLimited?: boolean, noKeys?: boolean, skipped?: string, added?: number, confirmed?: number}}
  */
 async function BZScanPlayer(battle, playerId) {
   const user = BZFindById("users", playerId);
-  if (!user) return { rateLimited: false };
+  if (!user) return { rateLimited: false, skipped: "사용자를 찾을 수 없음" };
   const nickname = user.getString("pubg_nickname");
-  if (!nickname) return { rateLimited: false };
+  if (!nickname) return { rateLimited: false, skipped: "Steam 닉네임 미등록" };
 
   const pid = await BZResolvePlayerId(nickname);
   if (pid.noKeys) return { noKeys: true };
   if (pid.rateLimited) return { rateLimited: true };
-  if (pid.notFound || pid.error) return { rateLimited: false };
+  if (pid.notFound) return { rateLimited: false, skipped: "닉네임 '" + nickname + "'(을)를 PUBG에서 찾을 수 없음" };
+  if (pid.error) return { rateLimited: false, skipped: "닉네임 조회 실패: " + pid.error };
 
   const list = await BZRecentMatches(pid.playerId);
   if (list.noKeys) return { noKeys: true };
   if (list.rateLimited) return { rateLimited: true };
-  if (list.error) return { rateLimited: false };
+  if (list.error) return { rateLimited: false, skipped: "매치 목록 조회 실패: " + list.error };
 
   // 배틀 시작 시각 기준 (시작 확인 완료 시점)
   const base = battle.getString("playing_at") || battle.getString("created");
@@ -541,6 +542,7 @@ async function BZScanPlayer(battle, playerId) {
   }
 
   // 최신 매치부터 스캔
+  let added = 0;
   let scanned = 0;
   for (const matchId of list.ids) {
     if (scanned >= BZ_SCAN_MAX_MATCHES) break;
@@ -565,8 +567,9 @@ async function BZScanPlayer(battle, playerId) {
       nr.set("note", "자동 기록 (게임 진행 중)");
       try {
         $app.save(nr);
+        added++;
       } catch (e) {
-        /* 무시 */
+        BZLog("scan", "진행 중 매치 기록 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
       }
       recorded.add(matchId);
       continue;
@@ -592,14 +595,16 @@ async function BZScanPlayer(battle, playerId) {
     nr.set("note", "자동 기록");
     try {
       $app.save(nr);
+      added++;
       BZLog("verify", "자동 기록 추가: " + nickname + " " + kills + "킬 (match=" + matchId + ") battle=" + battle.id);
     } catch (e) {
-      /* 무시 */
+      BZLog("scan", "자동 기록 저장 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
     }
     recorded.add(matchId);
   }
 
   // pending_verify 기록 재확인 (매치 종료 감지)
+  let confirmed = 0;
   for (const r of existing) {
     if (r.getString("status") !== "pending_verify") continue;
     const mid = r.getString("match_id");
@@ -630,13 +635,14 @@ async function BZScanPlayer(battle, playerId) {
     r.set("verified_at", BZNow());
     try {
       $app.save(r);
+      confirmed++;
       BZLog("verify", "매치 종료 감지 → 검증 확정: " + nickname + " " + kills + "킬 (match=" + mid + ") battle=" + battle.id);
     } catch (e) {
-      /* 무시 */
+      BZLog("scan", "검증 확정 저장 실패: " + nickname + " (match=" + mid + ") " + String((e && e.message) || e));
     }
   }
 
-  return { rateLimited: false };
+  return { rateLimited: false, added, confirmed };
 }
 
 /** verified 기록 킬수 합산으로 배틀 킬수 재계산 (멱등) */
@@ -701,9 +707,9 @@ async function BZScanBattle(battle) {
       /* 무시 */
     }
     BZDoSettle(battle);
-    return { rateLimited: false };
+    return { rateLimited: false, players: [] };
   }
-  if (battle.getString("status") !== "playing") return { rateLimited: false };
+  if (battle.getString("status") !== "playing") return { rateLimited: false, players: [] };
 
   const ra = await BZScanPlayer(battle, battle.getString("player_a"));
   if (ra.noKeys) return { noKeys: true };
@@ -712,6 +718,18 @@ async function BZScanBattle(battle) {
   if (rb.noKeys) return { noKeys: true };
   if (rb.rateLimited) return { rateLimited: true };
 
+  const players = [
+    { side: "A", playerId: battle.getString("player_a"), ...ra },
+    { side: "B", playerId: battle.getString("player_b"), ...rb },
+  ];
+  for (const p of players) {
+    if (p.skipped) {
+      BZLog("scan", "스캔 건너뜀 " + p.side + ": " + p.skipped + " (battle=" + battle.id + ")");
+    } else {
+      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 (battle=" + battle.id + ")");
+    }
+  }
+
   BZRecomputeKills(battle);
   try {
     $app.save(battle);
@@ -719,7 +737,7 @@ async function BZScanBattle(battle) {
     /* 무시 */
   }
   BZCheckWin(battle);
-  return { rateLimited: false };
+  return { rateLimited: false, players };
 }
 
 /** 활성 대전 전체 자동 스캔 (크론용) */

@@ -117,10 +117,24 @@ routerAdd("POST", "/api/bz/battles/scan", async (c) => {
 
   const result = await BZScanBattle(battle);
   if (result && result.noKeys) {
-    return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않아 게임 기록을 확인할 수 없습니다. 관리자에게 문의해 주세요." });
+    return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않았거나 비활성 상태입니다. 관리자 설정에서 확인해 주세요." });
   }
   if (result && result.rateLimited) {
     return c.json(200, { ok: false, message: "PUBG API 호출 한도에 도달했습니다. 잠시 후 자동으로 재시도됩니다." });
+  }
+  if (result && Array.isArray(result.players) && result.players.length) {
+    const parts = result.players.map((p) => {
+      if (p.skipped) return p.side + ": " + p.skipped;
+      const n = (p.added || 0) + (p.confirmed || 0);
+      return p.side + ": " + (n > 0 ? n + "건 기록" : "새 기록 없음");
+    });
+    const addedTotal = result.players.reduce((s, p) => s + (p.added || 0) + (p.confirmed || 0), 0);
+    const anySkip = result.players.some((p) => p.skipped);
+    const message = "게임 기록 확인 (" + parts.join(" · ") + ")";
+    if (addedTotal === 0 && anySkip) {
+      return c.json(200, { ok: false, message });
+    }
+    return c.json(200, { ok: true, message });
   }
   return c.json(200, { ok: true, message: "게임 기록을 확인했습니다." });
 });
