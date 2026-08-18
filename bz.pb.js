@@ -58,7 +58,7 @@ cronAdd("bz-auto-scan", "*/2 * * * *", () => {
 
 // 닉네임 확인 / 키 테스트
 routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
-  const { BZAuth, BZBody, BZFindById, BZNow, BZResolvePlayerId, BZ_SHARD, BZ_API } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZNow, BZResolvePlayerId, BZMarkKeyFailure, BZ_SHARD, BZ_API } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -82,6 +82,7 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
         timeout: 15000,
       });
       if (res.statusCode === 401 || res.statusCode === 403) {
+        BZMarkKeyFailure(key, "키 테스트 인증 오류 " + res.statusCode);
         return c.json(200, { ok: false, message: "키가 유효하지 않습니다." });
       }
       if (res.statusCode === 200) {

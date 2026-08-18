@@ -201,6 +201,23 @@ function BZWindowOf(keyId, now) {
   return fresh;
 }
 
+/** 키 실패 기록 (인증 오류 등). 3회 연속 실패 시 자동 비활성화. */
+function BZMarkKeyFailure(key, reason) {
+  try {
+    const fc = key.getInt("fail_count") + 1;
+    key.set("fail_count", fc);
+    if (fc >= 3) {
+      key.set("enabled", false);
+      BZLog("keys", "키 자동 비활성화 (연속 실패 " + fc + "회): " + key.getString("label") + " (" + reason + ")");
+    } else {
+      BZLog("keys", "키 실패 " + fc + "회: " + key.getString("label") + " (" + reason + ")");
+    }
+    $app.save(key);
+  } catch (e) {
+    /* 무시 */
+  }
+}
+
 /** 관리자 UI 용: 키별 현재 윈도우 사용량 조회 */
 function BZRateUsage() {
   let keys = [];
@@ -243,7 +260,17 @@ async function BZPubgGet(path) {
     if (res.statusCode === 404) return { notFound: true };
     if (res.statusCode !== 200) {
       if (res.statusCode === 429) return { rateLimited: true };
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        BZMarkKeyFailure(key, "PUBG API 인증 오류 " + res.statusCode);
+        return { error: "PUBG API 인증 오류 " + res.statusCode + " (키가 유효하지 않을 수 있습니다)" };
+      }
       return { error: "PUBG API 오류 " + res.statusCode };
+    }
+    try {
+      key.set("fail_count", 0);
+      $app.save(key);
+    } catch (e) {
+      /* 무시 */
     }
     return { json: res.json || {} };
   } catch (e) {
@@ -1086,6 +1113,7 @@ module.exports = {
   BZHasEnabledKeys: BZHasEnabledKeys,
   BZWindowOf: BZWindowOf,
   BZRateUsage: BZRateUsage,
+  BZMarkKeyFailure: BZMarkKeyFailure,
   BZPubgGet: BZPubgGet,
   BZResolvePlayerId: BZResolvePlayerId,
   BZRecentMatches: BZRecentMatches,
