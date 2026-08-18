@@ -271,13 +271,28 @@ async function BZResolvePlayerId(nickname) {
   return { playerId: data[0].id };
 }
 
-/** 플레이어 최근 매치 ID 목록 (캐시: 60초) */
-async function BZRecentMatches(playerId) {
-  const cacheKey = "matches:" + playerId;
+/** 플레이어 최근 매치 ID 목록 (캐시: 60초). startMs/endMs 지정 시 해당 시작 시각 구간만 조회 */
+async function BZRecentMatches(playerId, range) {
+  range = range || {};
+  const startMs = Number(range.startMs) || 0;
+  const endMs = Number(range.endMs) || 0;
+  const cacheKey = startMs ? "matches:" + playerId + ":" + startMs : "matches:" + playerId;
   const cached = BZCacheGet(cacheKey);
   if (cached && Array.isArray(cached)) return { ids: cached };
 
-  const res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches");
+  let query = "";
+  if (startMs > 0 && endMs > 0 && endMs > startMs) {
+    const q = [
+      "filter%5BcreatedAt-start%5D=" + encodeURIComponent(new Date(startMs).toISOString()),
+      "filter%5BcreatedAt-end%5D=" + encodeURIComponent(new Date(endMs).toISOString()),
+    ];
+    query = "?" + q.join("&");
+  }
+  let res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches" + query);
+  if ((res.error || res.notFound) && query) {
+    // 시각 필터 미지원 등에 대비해 필터 없이 재시도
+    res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches");
+  }
   if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) return { ids: [] };
@@ -492,15 +507,16 @@ async function BZScanPlayer(battle, playerId) {
   if (pid.notFound) return { rateLimited: false, skipped: "닉네임 '" + nickname + "'(을)를 PUBG에서 찾을 수 없음" };
   if (pid.error) return { rateLimited: false, skipped: "닉네임 조회 실패: " + pid.error };
 
-  const list = await BZRecentMatches(pid.playerId);
-  if (list.noKeys) return { noKeys: true };
-  if (list.rateLimited) return { rateLimited: true };
-  if (list.error) return { rateLimited: false, skipped: "매치 목록 조회 실패: " + list.error };
-
   // 배틀 시작 시각 기준 (시작 확인 완료 시점)
   const base = battle.getString("playing_at") || battle.getString("created");
   const baseMs = base ? new Date(base).getTime() : 0;
   const minMs = baseMs ? baseMs - BZ_VERIFY_TOL_MS : 0;
+
+  // 대전 시작 시각부터 현재까지의 매치만 조회 (목록 순서·최대 개수 문제 제거)
+  const list = await BZRecentMatches(pid.playerId, { startMs: minMs || 0, endMs: Date.now() + 5 * 60 * 1000 });
+  if (list.noKeys) return { noKeys: true };
+  if (list.rateLimited) return { rateLimited: true };
+  if (list.error) return { rateLimited: false, skipped: "매치 목록 조회 실패: " + list.error };
 
   let existing = [];
   try {
@@ -585,6 +601,9 @@ async function BZScanPlayer(battle, playerId) {
     // 종료된 매치: 배틀 시작 이전(오차 허용) 매치면 이후 목록도 전부 이전 → 중단
     const createdMs = detail.createdAt ? new Date(detail.createdAt).getTime() : 0;
     if (minMs && createdMs && createdMs < minMs) {
+      if (oldMatches === 0) {
+        BZLog("scan", "대전 시작 이전 매치 무시: " + nickname + " (match=" + matchId + ", started=" + detail.createdAt + ") battle=" + battle.id);
+      }
       oldMatches++;
       break;
     }
@@ -747,7 +766,7 @@ async function BZScanBattle(battle) {
     if (p.skipped) {
       BZLog("scan", "스캔 건너뜀 " + p.side + ": " + p.skipped + " (battle=" + battle.id + ")");
     } else {
-      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 (battle=" + battle.id + ")");
+      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
     }
   }
 
