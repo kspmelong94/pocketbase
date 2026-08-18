@@ -288,18 +288,3 @@ routerAdd("GET", "/api/bz/keys/usage", (c) => {
   if (me.getString("role") !== "operator") return c.json(403, { message: "운영자 전용입니다." });
   return c.json(200, { ok: true, keys: BZRateUsage() });
 });
-
-// 스키마 동기화 (운영자 — 누락 필드만 추가)
-routerAdd("POST", "/api/bz/admin/sync-schema", (c) => {
-  const { BZAuth, BZSyncSchema, BZLog } = require(`${__hooks}/bz-lib.js`);
-  const me = BZAuth(c);
-  if (!me) return c.json(401, { message: "인증이 필요합니다." });
-  if (me.getString("role") !== "operator") return c.json(403, { message: "운영자 전용입니다." });
-  const results = BZSyncSchema();
-  const failed = results.filter((r) => r.status.includes("실패"));
-  BZLog("setup", "스키마 동기화: " + (failed.length ? "일부 실패 (" + failed.length + "건)" : "정상"));
-  return c.json(200, {
-    ok: failed.length === 0,
-    results,
-  });
-});
