@@ -271,41 +271,31 @@ async function BZResolvePlayerId(nickname) {
   return { playerId: data[0].id };
 }
 
-/** 플레이어 최근 매치 ID 목록 (캐시: 60초). startMs/endMs 지정 시 해당 시작 시각 구간만 조회 */
-async function BZRecentMatches(playerId, range) {
-  range = range || {};
-  const startMs = Number(range.startMs) || 0;
-  const endMs = Number(range.endMs) || 0;
-  const cacheKey = startMs ? "matches:" + playerId + ":" + startMs : "matches:" + playerId;
+/**
+ * 플레이어 최근 매치 ID 목록 (캐시: 60초).
+ * PUBG API는 /players/{id} 응답의 relationships.matches.data 에 최근 매치 ID를 포함한다.
+ * (/players/{id}/matches 엔드포인트는 존재하지 않음)
+ */
+async function BZRecentMatches(playerId) {
+  const cacheKey = "matches:" + playerId;
   const cached = BZCacheGet(cacheKey);
   if (cached && Array.isArray(cached)) return { ids: cached };
 
-  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
-  let query = "";
-  if (startMs > 0 && endMs > 0 && endMs > startMs) {
-    query = "?filter%5BcreatedAt-start%5D=" + encodeURIComponent(iso(startMs)) +
-      "&filter%5BcreatedAt-end%5D=" + encodeURIComponent(iso(endMs));
-  }
-  let res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches" + query);
-  let usedFallback = false;
-  if ((res.error || res.notFound) && query) {
-    usedFallback = true;
-    BZLog("scan", "매치 목록 시각 필터 실패 (" + (res.error || "404") + "), 필터 없이 재시도 (player=" + playerId + ")");
-    res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId + "/matches");
-  }
+  const res = await BZPubgGet("/shards/" + BZ_SHARD + "/players/" + playerId);
   if (res.noKeys) return { noKeys: true };
   if (res.rateLimited) return { rateLimited: true };
   if (res.notFound) {
-    BZLog("scan", "매치 목록 404 (player=" + playerId + ")");
+    BZLog("scan", "플레이어 조회 404 (player=" + playerId + ")");
     return { ids: [] };
   }
   if (res.error) return { error: res.error };
-  const list = (res.json && res.json.data && res.json.data[0] && res.json.data[0].relationships &&
-    res.json.data[0].relationships.matches &&
-    res.json.data[0].relationships.matches.data) || [];
+  const data = res.json && res.json.data;
+  const player = Array.isArray(data) ? data[0] : data;
+  const list = (player && player.relationships && player.relationships.matches &&
+    player.relationships.matches.data) || [];
   const ids = list.map((m) => m.id).filter(Boolean);
   if (!ids.length) {
-    BZLog("scan", "매치 0개 (player=" + playerId + (query ? ", 필터=" + query : ", 무필터") + (usedFallback ? ", 필터 실패 후 재시도" : "") + ") 응답: " + JSON.stringify(res.json || {}).substring(0, 300));
+    BZLog("scan", "매치 0개 (player=" + playerId + ") 응답: " + JSON.stringify(res.json || {}).substring(0, 300));
   }
   BZCacheSet(cacheKey, ids, BZ_LIST_TTL);
   return { ids };
@@ -518,8 +508,7 @@ async function BZScanPlayer(battle, playerId) {
   const baseMs = base ? new Date(base).getTime() : 0;
   const minMs = baseMs ? baseMs - BZ_VERIFY_TOL_MS : 0;
 
-  // 대전 시작 시각부터 현재까지의 매치만 조회 (목록 순서·최대 개수 문제 제거)
-  const list = await BZRecentMatches(pid.playerId, { startMs: minMs || 0, endMs: Date.now() + 5 * 60 * 1000 });
+  const list = await BZRecentMatches(pid.playerId);
   if (list.noKeys) return { noKeys: true };
   if (list.rateLimited) return { rateLimited: true };
   if (list.error) return { rateLimited: false, skipped: "매치 목록 조회 실패: " + list.error };
