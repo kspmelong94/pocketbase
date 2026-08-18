@@ -551,12 +551,60 @@ function BZDoSettle(battle) {
 // ---------- 자동 게임 기록 스캔 ----------
 
 /**
+ * 수동 기록 추가 검증 (onRecordCreate 훅용).
+ * 진행 중 대전 참가자만 기록 가능, 5분 간격 + 검증 대기 3건 상한.
+ * @returns {string|null} 거부 사유 (null = 허용)
+ */
+function BZValidateManualRound(record) {
+  const battleId = record.getString("battle");
+  if (!battleId) return "대전 정보가 필요합니다.";
+  const battle = BZFindById("kill_battles", battleId);
+  if (!battle) return "대전을 찾을 수 없습니다.";
+  const playerId = record.getString("player");
+  if (battle.getString("player_a") !== playerId && battle.getString("player_b") !== playerId) {
+    return "대전 참가자가 아닙니다.";
+  }
+  if (battle.getString("status") !== "playing") {
+    return "진행 중인 대전에서만 기록할 수 있습니다.";
+  }
+  const limitMin = 5;
+  const now = Date.now();
+  let pendingCount = 0;
+  let lastCreated = 0;
+  try {
+    const recs = $app.findRecordsByFilter(
+      "kill_rounds",
+      "battle = {:b} && player = {:p}",
+      "-created",
+      50,
+      0,
+      { b: battleId, p: playerId }
+    );
+    for (const r of recs) {
+      if (r.getString("status") !== "manual") continue;
+      pendingCount++;
+      const cMs = new Date(r.getString("created")).getTime();
+      if (cMs > lastCreated) lastCreated = cMs;
+    }
+  } catch (e) {
+    /* 무시 */
+  }
+  if (pendingCount >= 3) {
+    return "검증 대기 중인 기록이 3건 이상입니다. 검증 완료 후 다시 기록해 주세요.";
+  }
+  if (lastCreated && now - lastCreated < limitMin * 60 * 1000) {
+    return "기록은 " + limitMin + "분 간격으로 추가할 수 있습니다. 잠시 후 다시 시도해 주세요.";
+  }
+  return null;
+}
+
+/**
  * 플레이어 1명의 최근 PUBG 매치를 스캔해 kill_rounds 에 기록을 추가/검증한다.
  * - 종료 매치 → 미검증 수동 기록 페어링 (1단계: 킬수 일치 우선)
  * - 킬수 불일치 수동 기록 → 시간 윈도우 내 가장 최근 매치로 API 값 보정 후 확정 (2단계)
  * - 페어링 안 된 종료 매치 → 자동 verified 기록 추가 (fallback)
  * - 진행 중 매치(404) → pending_verify 기록 추가 (다음 틱에서 재확인)
- * - 미검증 수동 기록: 기존 자동 기록과 중복 시 무효 처리, 60분 초과 시 불일치/무효 처리
+ * - 미검증 수동 기록: 기존 자동 기록과 중복 시 무효 처리, 20분(진행 중 매치 보호 시 60분) 초과 시 불일치/무효 처리
  * - 이미 기록된 매치 → 건너뜀 (중복 방지)
  * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
  * @returns {{rateLimited?: boolean, noKeys?: boolean, skipped?: string, added?: number, confirmed?: number, paired?: number, resolved?: number}}
@@ -838,13 +886,29 @@ async function BZScanPlayer(battle, playerId) {
   // 3) 이미 자동 기록된 매치와 교차 확인 (늦게 입력한 수동 기록 확정)
   BZCrossCheckManual(existing, manualPending, battle.id, pid.playerId, nickname);
 
-  // 4) 60분 초과 미검증 수동 기록 해소 (불일치/무효)
+  // 4) 미검증 수동 기록 해소 — 20분 기본, 진행 중 매치가 있으면 60분까지 유지 (가짜 기록 조기 차단)
   let resolved = 0;
-  const sweepMs = 60 * 60 * 1000;
+  const sweepMs = 20 * 60 * 1000;
+  const hardMs = 60 * 60 * 1000;
   const nowMs = Date.now();
   for (const rec of manualPending) {
     const cMs = new Date(rec.getString("created")).getTime();
-    if (!cMs || nowMs - cMs < sweepMs) continue;
+    const age = nowMs - cMs;
+    if (!cMs || age < sweepMs) continue;
+    if (age < hardMs) {
+      // 아직 게임이 진행 중일 수 있으면 대기 (진행 중 매치 기록이 근처에 존재)
+      let nearby = false;
+      for (const r2 of existing) {
+        if (r2.getString("status") !== "pending_verify") continue;
+        const gMs = new Date(r2.getString("game_started_at") || "").getTime();
+        if (!gMs) continue;
+        if (gMs <= cMs && cMs - gMs <= 45 * 60 * 1000) {
+          nearby = true;
+          break;
+        }
+      }
+      if (nearby) continue;
+    }
     const evidence = BZNewestRecordInWindow(existing, rec);
     if (evidence) {
       const evKills = evidence.getInt("kills_final") || evidence.getInt("kills_api") || 0;
@@ -862,7 +926,7 @@ async function BZScanPlayer(battle, playerId) {
       }
     } else {
       rec.set("status", "void");
-      rec.set("note", "검증 매치 없음 (60분 경과)");
+      rec.set("note", "검증 매치 없음 (20분 경과)");
       BZLog("verify", "수동 기록 검증 불가 처리: " + nickname + " (매치 없음) battle=" + battle.id);
     }
     try {
@@ -1371,6 +1435,7 @@ module.exports = {
   BZStreakOf: BZStreakOf,
   BZDoSettle: BZDoSettle,
   BZScanPlayer: BZScanPlayer,
+  BZValidateManualRound: BZValidateManualRound,
   BZRecomputeKills: BZRecomputeKills,
   BZCheckWin: BZCheckWin,
   BZScanBattle: BZScanBattle,

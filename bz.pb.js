@@ -6,10 +6,23 @@
 // ---------- 훅 ----------
 
 onRecordCreate((e) => {
-  const { BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
+  try {
+    if (e.record.collection().name === "kill_rounds" && e.record.getString("status") === "manual") {
+      // 고의적 임의 기록 방지: 진행 중 대전 참가자 + 5분 간격 + 검증 대기 3건 상한
+      const { BZValidateManualRound } = require(`${__hooks}/bz-lib.js`);
+      const err = BZValidateManualRound(e.record);
+      if (err) {
+        e.next(new Error(err));
+        return;
+      }
+    }
+  } catch (err) {
+    /* 검증 실패 시 차단하지 않음 (허용 최소화) */
+  }
   e.next();
   try {
     if (e.record.collection().name === "kill_queue" && e.record.getString("status") === "waiting") {
+      const { BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
       BZRunMatchmaking();
     }
   } catch (err) {
