@@ -552,52 +552,18 @@ function BZDoSettle(battle) {
 
 /**
  * 플레이어 1명의 최근 PUBG 매치를 스캔해 kill_rounds 에 기록을 추가/검증한다.
- * - 종료 매치 → 미검증 수동 기록과 킬수 일치 페어링 시도 (verified 확정)
+ * - 종료 매치 → 미검증 수동 기록 페어링 (1단계: 킬수 일치 우선)
+ * - 킬수 불일치 수동 기록 → 시간 윈도우 내 가장 최근 매치로 API 값 보정 후 확정 (2단계)
  * - 페어링 안 된 종료 매치 → 자동 verified 기록 추가 (fallback)
  * - 진행 중 매치(404) → pending_verify 기록 추가 (다음 틱에서 재확인)
- * - 미검증 수동 기록: 기존 자동 기록과 교차 확인, 60분 초과 시 불일치/무효 처리
+ * - 미검증 수동 기록: 기존 자동 기록과 중복 시 무효 처리, 60분 초과 시 불일치/무효 처리
  * - 이미 기록된 매치 → 건너뜀 (중복 방지)
  * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
  * @returns {{rateLimited?: boolean, noKeys?: boolean, skipped?: string, added?: number, confirmed?: number, paired?: number, resolved?: number}}
  */
 /**
- * 종료 매치를 미검증 수동 기록과 페어링 (킬수 일치 + 시간 윈도우).
- * @returns {boolean} 페어링되어 manual → verified 처리했으면 true
- */
-function BZPairManualRecord(battleId, manualPending, matchId, detail, stats, createdMs, nickname) {
-  if (!stats.matched) return false;
-  for (let i = 0; i < manualPending.length; i++) {
-    const rec = manualPending[i];
-    const cMs = new Date(rec.getString("created")).getTime();
-    if (!cMs) continue;
-    // 시간 윈도우: [수동 기록 - 2h, +10min]
-    if (createdMs < cMs - 2 * 3600 * 1000 || createdMs > cMs + 10 * 60 * 1000) continue;
-    if (Number(stats.kills) !== rec.getInt("kills_manual")) continue;
-    rec.set("status", "verified");
-    rec.set("kills_api", stats.kills);
-    rec.set("kills_final", stats.kills);
-    rec.set("match_id", matchId);
-    rec.set("game_started_at", detail.createdAt || "");
-    rec.set("map", detail.mapName || "");
-    rec.set("placement", stats.placement);
-    rec.set("verified_at", BZNow());
-    rec.set("note", "수동 기록 검증 완료");
-    try {
-      $app.save(rec);
-      BZLog("verify", "수동 기록 검증 완료: " + nickname + " " + stats.kills + "킬 (match=" + matchId + ") battle=" + battleId);
-    } catch (e) {
-      BZLog("scan", "수동 기록 검증 저장 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
-      return false;
-    }
-    manualPending.splice(i, 1);
-    return true;
-  }
-  return false;
-}
-
-/**
- * 이미 자동 기록된(verified) 매치와 미검증 수동 기록 교차 확인 (API 추가 호출 없음).
- * 늦게 기록해도 기존 검증 기록과 킬수·시간이 일치하면 즉시 확정한다.
+ * 이미 자동 기록된(verified) 매치와 동일한 미검증 수동 기록 → 중복 무효 처리 (API 추가 호출 없음).
+ * 같은 게임이 이미 자동 기록되면 킬수 중복 집계를 막기 위해 수동 기록을 무효화한다.
  */
 function BZCrossCheckManual(existing, manualPending, battleId, playerId, nickname) {
   let count = 0;
@@ -613,19 +579,12 @@ function BZCrossCheckManual(existing, manualPending, battleId, playerId, nicknam
       if (!gMs) continue;
       if (gMs < cMs - 2 * 3600 * 1000 || gMs > cMs + 10 * 60 * 1000) continue;
       if (Number(r2.getInt("kills_final") || r2.getInt("kills_api") || 0) !== rec.getInt("kills_manual")) continue;
-      const apiKills = r2.getInt("kills_api") || rec.getInt("kills_manual");
-      rec.set("status", "verified");
-      rec.set("kills_api", apiKills);
-      rec.set("kills_final", r2.getInt("kills_final") || rec.getInt("kills_manual"));
-      rec.set("match_id", r2.getString("match_id") || "");
-      rec.set("game_started_at", r2.getString("game_started_at") || "");
-      rec.set("map", r2.getString("map") || "");
-      rec.set("placement", r2.getInt("placement") || 0);
-      rec.set("verified_at", BZNow());
-      rec.set("note", "수동 기록 검증 완료 (기존 자동 기록과 동일)");
+      // 같은 매치가 이미 자동 기록됨 → 중복이므로 무효 처리 (킬수 중복 집계 방지)
+      rec.set("status", "void");
+      rec.set("note", "기존 자동 기록과 동일하여 중복 처리");
       try {
         $app.save(rec);
-        BZLog("verify", "수동 기록 교차 검증 완료: " + nickname + " (match=" + rec.getString("match_id") + ") battle=" + battleId);
+        BZLog("verify", "수동 기록 중복 처리: " + nickname + " (match=" + r2.getString("match_id") + ") battle=" + battleId);
         count++;
       } catch (e) {
         /* 무시 */
@@ -725,7 +684,7 @@ async function BZScanPlayer(battle, playerId) {
   }
   manualPending.sort((a, b) => String(a.getString("created")).localeCompare(String(b.getString("created"))));
 
-  // 최신 매치부터 스캔
+  // 최신 매치부터 스캔 (종료 매치는 후보로 수집, 진행 중 매치는 즉시 기록)
   let added = 0;
   let scanned = 0;
   let matchesFound = list.ids.length;
@@ -733,6 +692,7 @@ async function BZScanPlayer(battle, playerId) {
   let noCreatedAt = 0;
   let oldMatches = 0;
   let paired = 0;
+  const completed = [];
   for (const matchId of list.ids) {
     if (scanned >= BZ_SCAN_MAX_MATCHES) break;
     if (recorded.has(matchId)) continue;
@@ -786,26 +746,80 @@ async function BZScanPlayer(battle, playerId) {
     if (!stats.matched && detail.participantCount > 0) {
       BZLog("scan", "참가자 매칭 실패: " + nickname + " (match=" + matchId + ", 참가자 " + detail.participantCount + "명) battle=" + battle.id);
     }
+    completed.push({ matchId, detail, stats, createdMs });
+  }
 
-    // 1) 수동 기록과 킬수 일치 페어링 → 검증 확정
-    if (BZPairManualRecord(battle.id, manualPending, matchId, detail, stats, createdMs, nickname)) {
-      recorded.add(matchId);
-      paired++;
+  // 수동 기록 페어링 — 1단계: 킬수 일치 우선, 2단계: 시간 윈도우 내 가장 최근 매치로 API 값 보정
+  const usedMatch = new Set();
+  let mi = 0;
+  while (mi < manualPending.length) {
+    const rec = manualPending[mi];
+    const cMs = new Date(rec.getString("created")).getTime();
+    if (!cMs) {
+      mi++;
       continue;
     }
+    const win = completed.filter(
+      (c) =>
+        c.stats.matched &&
+        !usedMatch.has(c.matchId) &&
+        c.createdMs >= cMs - 2 * 3600 * 1000 &&
+        c.createdMs <= cMs + 10 * 60 * 1000
+    );
+    if (!win.length) {
+      mi++;
+      continue;
+    }
+    let pick = win.find((c) => Number(c.stats.kills) === rec.getInt("kills_manual")) || null;
+    const corrected = !pick;
+    if (corrected) {
+      // 킬수 불일치 → 시간 윈도우 내 가장 최근 매치로 보정
+      pick = win.reduce((a, b) => (b.createdMs > a.createdMs ? b : a));
+    }
+    const apiKills = pick.stats.kills;
+    rec.set("status", "verified");
+    rec.set("kills_api", apiKills);
+    rec.set("kills_final", apiKills);
+    rec.set("match_id", pick.matchId);
+    rec.set("game_started_at", pick.detail.createdAt || "");
+    rec.set("map", pick.detail.mapName || "");
+    rec.set("placement", pick.stats.placement);
+    rec.set("verified_at", BZNow());
+    rec.set(
+      "note",
+      corrected ? "수동 입력 보정 (API " + apiKills + "킬)" : "수동 기록 검증 완료"
+    );
+    try {
+      $app.save(rec);
+      paired++;
+      BZLog(
+        "verify",
+        "수동 기록 검증 완료" + (corrected ? " (보정)" : "") + ": " + nickname + " " + apiKills + "킬 (match=" + pick.matchId + ") battle=" + battle.id
+      );
+    } catch (e) {
+      BZLog("scan", "수동 기록 검증 저장 실패: " + nickname + " (match=" + pick.matchId + ") " + String((e && e.message) || e));
+      mi++;
+      continue;
+    }
+    usedMatch.add(pick.matchId);
+    recorded.add(pick.matchId);
+    manualPending.splice(mi, 1);
+  }
 
-    // 2) 페어링 안 된 종료 매치 → 자동 기록 (fallback)
-    const kills = stats.kills;
-    const placement = stats.placement;
+  // 남은 종료 매치 → 자동 기록 (fallback)
+  for (const c of completed) {
+    if (usedMatch.has(c.matchId)) continue;
+    const kills = c.stats.kills;
+    const placement = c.stats.placement;
     nextNumber++;
     const nr = new Record($app.findCollectionByNameOrId("kill_rounds"));
     nr.set("battle", battle.id);
     nr.set("player", playerId);
     nr.set("round_number", nextNumber);
     nr.set("status", "verified");
-    nr.set("match_id", matchId);
-    nr.set("game_started_at", detail.createdAt);
-    nr.set("map", detail.mapName || "");
+    nr.set("match_id", c.matchId);
+    nr.set("game_started_at", c.detail.createdAt);
+    nr.set("map", c.detail.mapName || "");
     nr.set("placement", placement);
     nr.set("kills_api", kills);
     nr.set("kills_final", kills);
@@ -814,11 +828,11 @@ async function BZScanPlayer(battle, playerId) {
     try {
       $app.save(nr);
       added++;
-      BZLog("verify", "자동 기록 추가: " + nickname + " " + kills + "킬 (match=" + matchId + ") battle=" + battle.id);
+      BZLog("verify", "자동 기록 추가: " + nickname + " " + kills + "킬 (match=" + c.matchId + ") battle=" + battle.id);
     } catch (e) {
-      BZLog("scan", "자동 기록 저장 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
+      BZLog("scan", "자동 기록 저장 실패: " + nickname + " (match=" + c.matchId + ") " + String((e && e.message) || e));
     }
-    recorded.add(matchId);
+    recorded.add(c.matchId);
   }
 
   // 3) 이미 자동 기록된 매치와 교차 확인 (늦게 입력한 수동 기록 확정)
@@ -833,12 +847,19 @@ async function BZScanPlayer(battle, playerId) {
     if (!cMs || nowMs - cMs < sweepMs) continue;
     const evidence = BZNewestRecordInWindow(existing, rec);
     if (evidence) {
-      const apiKills = evidence.getInt("kills_final") || evidence.getInt("kills_api") || 0;
-      rec.set("status", "mismatch");
-      rec.set("kills_api", apiKills);
-      rec.set("kills_final", 0);
-      rec.set("note", "수동 기록 불일치 (API " + apiKills + "킬)");
-      BZLog("verify", "수동 기록 불일치 처리: " + nickname + " (수동 " + rec.getInt("kills_manual") + "킬 vs API " + apiKills + "킬) battle=" + battle.id);
+      const evKills = evidence.getInt("kills_final") || evidence.getInt("kills_api") || 0;
+      if (Number(evKills) === rec.getInt("kills_manual")) {
+        // 이미 집계된 매치와 동일 → 중복 무효 처리
+        rec.set("status", "void");
+        rec.set("note", "기존 자동 기록과 동일하여 중복 처리");
+        BZLog("verify", "수동 기록 중복 처리: " + nickname + " (수동 " + rec.getInt("kills_manual") + "킬, 이미 집계됨) battle=" + battle.id);
+      } else {
+        rec.set("status", "mismatch");
+        rec.set("kills_api", evKills);
+        rec.set("kills_final", 0);
+        rec.set("note", "수동 기록 불일치 (API " + evKills + "킬)");
+        BZLog("verify", "수동 기록 불일치 처리: " + nickname + " (수동 " + rec.getInt("kills_manual") + "킬 vs API " + evKills + "킬) battle=" + battle.id);
+      }
     } else {
       rec.set("status", "void");
       rec.set("note", "검증 매치 없음 (60분 경과)");
