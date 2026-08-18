@@ -126,7 +126,14 @@ routerAdd("POST", "/api/bz/battles/scan", async (c) => {
     const parts = result.players.map((p) => {
       if (p.skipped) return p.side + ": " + p.skipped;
       const n = (p.added || 0) + (p.confirmed || 0);
-      return p.side + ": " + (n > 0 ? n + "건 기록" : "새 기록 없음");
+      if (n > 0) return p.side + ": " + n + "건 기록";
+      let why = "새 기록 없음";
+      const mf = p.matchesFound || 0;
+      if (mf === 0) why += " (최근 매치 없음)";
+      else if (p.oldMatches > 0) why += " (매치 " + mf + "개 중 " + p.oldMatches + "개 대전 시작 이전)";
+      else if (p.detailErrors > 0) why += " (상세 조회 실패 " + p.detailErrors + "건)";
+      else if (p.noCreatedAt > 0) why += " (시각 정보 없음 " + p.noCreatedAt + "건)";
+      return p.side + ": " + why;
     });
     const addedTotal = result.players.reduce((s, p) => s + (p.added || 0) + (p.confirmed || 0), 0);
     const anySkip = result.players.some((p) => p.skipped);

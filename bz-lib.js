@@ -544,6 +544,10 @@ async function BZScanPlayer(battle, playerId) {
   // 최신 매치부터 스캔
   let added = 0;
   let scanned = 0;
+  let matchesFound = list.ids.length;
+  let detailErrors = 0;
+  let noCreatedAt = 0;
+  let oldMatches = 0;
   for (const matchId of list.ids) {
     if (scanned >= BZ_SCAN_MAX_MATCHES) break;
     if (recorded.has(matchId)) continue;
@@ -552,7 +556,10 @@ async function BZScanPlayer(battle, playerId) {
     const detail = await BZMatchDetail(matchId);
     if (detail.noKeys) return { noKeys: true };
     if (detail.rateLimited) return { rateLimited: true };
-    if (detail.error) continue;
+    if (detail.error) {
+      detailErrors++;
+      continue;
+    }
     if (detail.ongoing) {
       // 진행 중 매치 → 기록 추가 후 다음 틱에서 재확인
       nextNumber++;
@@ -577,8 +584,14 @@ async function BZScanPlayer(battle, playerId) {
 
     // 종료된 매치: 배틀 시작 이전(오차 허용) 매치면 이후 목록도 전부 이전 → 중단
     const createdMs = detail.createdAt ? new Date(detail.createdAt).getTime() : 0;
-    if (minMs && createdMs && createdMs < minMs) break;
-    if (!createdMs) continue;
+    if (minMs && createdMs && createdMs < minMs) {
+      oldMatches++;
+      break;
+    }
+    if (!createdMs) {
+      noCreatedAt++;
+      continue;
+    }
 
     const kills = detail.killsByPlayer ? Number(detail.killsByPlayer[pid.playerId] || 0) : 0;
     nextNumber++;
@@ -642,7 +655,15 @@ async function BZScanPlayer(battle, playerId) {
     }
   }
 
-  return { rateLimited: false, added, confirmed };
+  return {
+    rateLimited: false,
+    added,
+    confirmed,
+    matchesFound,
+    detailErrors,
+    noCreatedAt,
+    oldMatches,
+  };
 }
 
 /** verified 기록 킬수 합산으로 배틀 킬수 재계산 (멱등) */
