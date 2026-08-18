@@ -911,9 +911,11 @@ function BZRunMatchmaking() {
     battle.set("kills_b", 0);
     battle.set("pending_kills_a", 0);
     battle.set("pending_kills_b", 0);
-    battle.set("status", "pending");
-    battle.set("started_a", false);
-    battle.set("started_b", false);
+    // 매칭 즉시 시작 (시작 확인 절차 없음) — playing_at 기준으로 몰수 승 타임아웃이 흐른다
+    battle.set("status", "playing");
+    battle.set("playing_at", BZNow());
+    battle.set("started_a", true);
+    battle.set("started_b", true);
     battle.set("game_started_a", false);
     battle.set("game_started_b", false);
     battle.set("current_round_a", 0);
