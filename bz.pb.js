@@ -201,7 +201,7 @@ routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
       );
       return recs.some((r) => {
         const s = r.getString("status");
-        return s === "verified" || s === "pending_verify";
+        return s === "verified" || s === "pending_verify" || s === "manual";
       });
     } catch (e) {
       return true; // 확인 불가 시 몰수 불가 (안전)

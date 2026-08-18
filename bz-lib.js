@@ -551,13 +551,112 @@ function BZDoSettle(battle) {
 // ---------- 자동 게임 기록 스캔 ----------
 
 /**
- * 플레이어 1명의 최근 PUBG 매치를 스캔해 kill_rounds 에 기록을 추가한다.
- * - 진행 중 매치(404)  → pending_verify 기록 추가 (다음 틱에서 재확인)
- * - 종료된 매치       → verified 기록 추가 (kills_api = 실제 킬수)
- * - 이미 기록된 매치   → 건너뜀 (중복 방지)
+ * 플레이어 1명의 최근 PUBG 매치를 스캔해 kill_rounds 에 기록을 추가/검증한다.
+ * - 종료 매치 → 미검증 수동 기록과 킬수 일치 페어링 시도 (verified 확정)
+ * - 페어링 안 된 종료 매치 → 자동 verified 기록 추가 (fallback)
+ * - 진행 중 매치(404) → pending_verify 기록 추가 (다음 틱에서 재확인)
+ * - 미검증 수동 기록: 기존 자동 기록과 교차 확인, 60분 초과 시 불일치/무효 처리
+ * - 이미 기록된 매치 → 건너뜀 (중복 방지)
  * - 배틀 시작 이전 매치 → 스캔 중단 (매치 목록은 최신순)
- * @returns {{rateLimited?: boolean, noKeys?: boolean, skipped?: string, added?: number, confirmed?: number}}
+ * @returns {{rateLimited?: boolean, noKeys?: boolean, skipped?: string, added?: number, confirmed?: number, paired?: number, resolved?: number}}
  */
+/**
+ * 종료 매치를 미검증 수동 기록과 페어링 (킬수 일치 + 시간 윈도우).
+ * @returns {boolean} 페어링되어 manual → verified 처리했으면 true
+ */
+function BZPairManualRecord(battleId, manualPending, matchId, detail, stats, createdMs, nickname) {
+  if (!stats.matched) return false;
+  for (let i = 0; i < manualPending.length; i++) {
+    const rec = manualPending[i];
+    const cMs = new Date(rec.getString("created")).getTime();
+    if (!cMs) continue;
+    // 시간 윈도우: [수동 기록 - 2h, +10min]
+    if (createdMs < cMs - 2 * 3600 * 1000 || createdMs > cMs + 10 * 60 * 1000) continue;
+    if (Number(stats.kills) !== rec.getInt("kills_manual")) continue;
+    rec.set("status", "verified");
+    rec.set("kills_api", stats.kills);
+    rec.set("kills_final", stats.kills);
+    rec.set("match_id", matchId);
+    rec.set("game_started_at", detail.createdAt || "");
+    rec.set("map", detail.mapName || "");
+    rec.set("placement", stats.placement);
+    rec.set("verified_at", BZNow());
+    rec.set("note", "수동 기록 검증 완료");
+    try {
+      $app.save(rec);
+      BZLog("verify", "수동 기록 검증 완료: " + nickname + " " + stats.kills + "킬 (match=" + matchId + ") battle=" + battleId);
+    } catch (e) {
+      BZLog("scan", "수동 기록 검증 저장 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
+      return false;
+    }
+    manualPending.splice(i, 1);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 이미 자동 기록된(verified) 매치와 미검증 수동 기록 교차 확인 (API 추가 호출 없음).
+ * 늦게 기록해도 기존 검증 기록과 킬수·시간이 일치하면 즉시 확정한다.
+ */
+function BZCrossCheckManual(existing, manualPending, battleId, playerId, nickname) {
+  let count = 0;
+  for (let i = manualPending.length - 1; i >= 0; i--) {
+    const rec = manualPending[i];
+    const cMs = new Date(rec.getString("created")).getTime();
+    if (!cMs) continue;
+    for (const r2 of existing) {
+      if (r2 === rec) continue;
+      if (r2.getString("status") !== "verified") continue;
+      if (r2.getString("player") !== playerId) continue;
+      const gMs = new Date(r2.getString("game_started_at") || "").getTime();
+      if (!gMs) continue;
+      if (gMs < cMs - 2 * 3600 * 1000 || gMs > cMs + 10 * 60 * 1000) continue;
+      if (Number(r2.getInt("kills_final") || r2.getInt("kills_api") || 0) !== rec.getInt("kills_manual")) continue;
+      const apiKills = r2.getInt("kills_api") || rec.getInt("kills_manual");
+      rec.set("status", "verified");
+      rec.set("kills_api", apiKills);
+      rec.set("kills_final", r2.getInt("kills_final") || rec.getInt("kills_manual"));
+      rec.set("match_id", r2.getString("match_id") || "");
+      rec.set("game_started_at", r2.getString("game_started_at") || "");
+      rec.set("map", r2.getString("map") || "");
+      rec.set("placement", r2.getInt("placement") || 0);
+      rec.set("verified_at", BZNow());
+      rec.set("note", "수동 기록 검증 완료 (기존 자동 기록과 동일)");
+      try {
+        $app.save(rec);
+        BZLog("verify", "수동 기록 교차 검증 완료: " + nickname + " (match=" + rec.getString("match_id") + ") battle=" + battleId);
+        count++;
+      } catch (e) {
+        /* 무시 */
+      }
+      manualPending.splice(i, 1);
+      break;
+    }
+  }
+  return count;
+}
+
+/** 시간 윈도우 내 가장 최근 verified 기록 (불일치 판정 근거용) */
+function BZNewestRecordInWindow(existing, rec) {
+  const cMs = new Date(rec.getString("created")).getTime();
+  if (!cMs) return null;
+  let best = null;
+  let bestMs = 0;
+  for (const r2 of existing) {
+    if (r2 === rec) continue;
+    if (r2.getString("status") !== "verified") continue;
+    const gMs = new Date(r2.getString("game_started_at") || "").getTime();
+    if (!gMs) continue;
+    if (gMs < cMs - 2 * 3600 * 1000 || gMs > cMs + 10 * 60 * 1000) continue;
+    if (gMs > bestMs) {
+      bestMs = gMs;
+      best = r2;
+    }
+  }
+  return best;
+}
+
 async function BZScanPlayer(battle, playerId) {
   const user = BZFindById("users", playerId);
   if (!user) return { rateLimited: false, skipped: "사용자를 찾을 수 없음" };
@@ -619,6 +718,13 @@ async function BZScanPlayer(battle, playerId) {
     if (mid) recorded.add(mid);
   }
 
+  // 미검증 수동 기록 (created 오름차순 — 오래된 기록부터 페어링)
+  const manualPending = [];
+  for (const r of existing) {
+    if (r.getString("status") === "manual") manualPending.push(r);
+  }
+  manualPending.sort((a, b) => String(a.getString("created")).localeCompare(String(b.getString("created"))));
+
   // 최신 매치부터 스캔
   let added = 0;
   let scanned = 0;
@@ -626,6 +732,7 @@ async function BZScanPlayer(battle, playerId) {
   let detailErrors = 0;
   let noCreatedAt = 0;
   let oldMatches = 0;
+  let paired = 0;
   for (const matchId of list.ids) {
     if (scanned >= BZ_SCAN_MAX_MATCHES) break;
     if (recorded.has(matchId)) continue;
@@ -679,6 +786,15 @@ async function BZScanPlayer(battle, playerId) {
     if (!stats.matched && detail.participantCount > 0) {
       BZLog("scan", "참가자 매칭 실패: " + nickname + " (match=" + matchId + ", 참가자 " + detail.participantCount + "명) battle=" + battle.id);
     }
+
+    // 1) 수동 기록과 킬수 일치 페어링 → 검증 확정
+    if (BZPairManualRecord(battle.id, manualPending, matchId, detail, stats, createdMs, nickname)) {
+      recorded.add(matchId);
+      paired++;
+      continue;
+    }
+
+    // 2) 페어링 안 된 종료 매치 → 자동 기록 (fallback)
     const kills = stats.kills;
     const placement = stats.placement;
     nextNumber++;
@@ -703,6 +819,37 @@ async function BZScanPlayer(battle, playerId) {
       BZLog("scan", "자동 기록 저장 실패: " + nickname + " (match=" + matchId + ") " + String((e && e.message) || e));
     }
     recorded.add(matchId);
+  }
+
+  // 3) 이미 자동 기록된 매치와 교차 확인 (늦게 입력한 수동 기록 확정)
+  BZCrossCheckManual(existing, manualPending, battle.id, pid.playerId, nickname);
+
+  // 4) 60분 초과 미검증 수동 기록 해소 (불일치/무효)
+  let resolved = 0;
+  const sweepMs = 60 * 60 * 1000;
+  const nowMs = Date.now();
+  for (const rec of manualPending) {
+    const cMs = new Date(rec.getString("created")).getTime();
+    if (!cMs || nowMs - cMs < sweepMs) continue;
+    const evidence = BZNewestRecordInWindow(existing, rec);
+    if (evidence) {
+      const apiKills = evidence.getInt("kills_final") || evidence.getInt("kills_api") || 0;
+      rec.set("status", "mismatch");
+      rec.set("kills_api", apiKills);
+      rec.set("kills_final", 0);
+      rec.set("note", "수동 기록 불일치 (API " + apiKills + "킬)");
+      BZLog("verify", "수동 기록 불일치 처리: " + nickname + " (수동 " + rec.getInt("kills_manual") + "킬 vs API " + apiKills + "킬) battle=" + battle.id);
+    } else {
+      rec.set("status", "void");
+      rec.set("note", "검증 매치 없음 (60분 경과)");
+      BZLog("verify", "수동 기록 검증 불가 처리: " + nickname + " (매치 없음) battle=" + battle.id);
+    }
+    try {
+      $app.save(rec);
+      resolved++;
+    } catch (e) {
+      /* 무시 */
+    }
   }
 
   // pending_verify 기록 재확인 (매치 종료 감지)
@@ -753,6 +900,8 @@ async function BZScanPlayer(battle, playerId) {
     rateLimited: false,
     added,
     confirmed,
+    paired,
+    resolved,
     matchesFound,
     detailErrors,
     noCreatedAt,
@@ -760,10 +909,12 @@ async function BZScanPlayer(battle, playerId) {
   };
 }
 
-/** verified 기록 킬수 합산으로 배틀 킬수 재계산 (멱등) */
+/** verified 킬수 + 수동(검증 대기) 킬수 합산으로 배틀 킬수 재계산 (멱등) */
 function BZRecomputeKills(battle) {
   let ka = 0;
   let kb = 0;
+  let pa = 0;
+  let pb = 0;
   let rounds = [];
   try {
     rounds = $app.findRecordsByFilter("kill_rounds", "battle = {:b}", "round_number", 500, 0, { b: battle.id });
@@ -771,33 +922,103 @@ function BZRecomputeKills(battle) {
     rounds = [];
   }
   for (const r of rounds) {
-    if (r.getString("status") !== "verified") continue;
     const p = r.getString("player");
-    const k = r.getInt("kills_final") || r.getInt("kills_api") || 0;
-    if (p === battle.getString("player_a")) ka += k;
-    else if (p === battle.getString("player_b")) kb += k;
+    if (r.getString("status") === "verified") {
+      const k = r.getInt("kills_final") || r.getInt("kills_api") || 0;
+      if (p === battle.getString("player_a")) ka += k;
+      else if (p === battle.getString("player_b")) kb += k;
+    } else if (r.getString("status") === "manual") {
+      const k = r.getInt("kills_manual") || 0;
+      if (p === battle.getString("player_a")) pa += k;
+      else if (p === battle.getString("player_b")) pb += k;
+    }
   }
   battle.set("kills_a", ka);
   battle.set("kills_b", kb);
-  battle.set("pending_kills_a", 0);
-  battle.set("pending_kills_b", 0);
+  battle.set("pending_kills_a", pa);
+  battle.set("pending_kills_b", pb);
 }
 
-/** 목표 킬수 달성 시 승리 확정 + 정산 */
+/**
+ * 목표 킬수 달성 시 승리 확정 + 정산 (검증 후 확정 모델).
+ * - 수동(검증 전) 킬 포함 도달 → winner_pending + settling, API 검증 후 확정
+ * - 검증된 킬만으로 도달 → 즉시 확정
+ * - settling 중: pending 해소(검증)되면 확정, 총합이 목표 미달로 무너지면 재개
+ */
 function BZCheckWin(battle) {
   if (battle.getString("winner")) return;
   const target = battle.getInt("target_kills") || 5;
-  const ka = battle.getInt("kills_a");
-  const kb = battle.getInt("kills_b");
+  const pa = battle.getString("player_a");
+  const pb = battle.getString("player_b");
+  const wp = battle.getString("winner_pending");
+  const status = battle.getString("status");
+
+  // 검증 대기 중 확정/재개 판정
+  if (status === "settling" && wp) {
+    const wSide = wp === pa ? "a" : "b";
+    const verified = battle.getInt(wSide === "a" ? "kills_a" : "kills_b");
+    const pending = battle.getInt(wSide === "a" ? "pending_kills_a" : "pending_kills_b");
+    const total = verified + pending;
+    if (total >= target && pending === 0) {
+      // 수동 기록 검증 완료 → 승리 확정
+      battle.set("winner", wp);
+      battle.set("winner_pending", "");
+      battle.set("status", "finished");
+      try {
+        $app.save(battle);
+      } catch (e) {
+        return;
+      }
+      const settled = BZDoSettle(battle);
+      BZLog("verify", "검증 후 승리 확정: " + wp + " (" + verified + "킬) battle=" + battle.id + (settled.ok ? "" : " 정산 보류"));
+      return;
+    }
+    if (total < target) {
+      // 검증 불일치/무효로 무너짐 → 재개
+      battle.set("winner_pending", "");
+      battle.set("status", "playing");
+      try {
+        $app.save(battle);
+      } catch (e) {
+        return;
+      }
+      BZLog("verify", "검증 불일치로 대전 재개: " + wp + " (총합 " + total + "킬) battle=" + battle.id);
+      return;
+    }
+    return; // 아직 검증 대기 중
+  }
+
+  const ka = battle.getInt("kills_a") + battle.getInt("pending_kills_a");
+  const kb = battle.getInt("kills_b") + battle.getInt("pending_kills_b");
   if (ka < target && kb < target) return;
 
   let winner = null;
   if (ka >= target && kb >= target) {
-    // 동시 도달(이론상): 킬수가 많은 쪽, 같으면 A
-    winner = ka >= kb ? battle.getString("player_a") : battle.getString("player_b");
+    // 동시 도달: 검증 킬로 도달한 쪽 우선, 동률이면 총합 우위, 같으면 A
+    const va = battle.getInt("kills_a");
+    const vb = battle.getInt("kills_b");
+    if (va >= target && vb < target) winner = pa;
+    else if (vb >= target && va < target) winner = pb;
+    else winner = ka >= kb ? pa : pb;
   } else {
-    winner = ka >= target ? battle.getString("player_a") : battle.getString("player_b");
+    winner = ka >= target ? pa : pb;
   }
+
+  const wSide = winner === pa ? "a" : "b";
+  const pendingW = battle.getInt(wSide === "a" ? "pending_kills_a" : "pending_kills_b");
+  if (pendingW > 0) {
+    // 수동(검증 전) 킬 포함 도달 → 검증 대기
+    battle.set("winner_pending", winner);
+    battle.set("status", "settling");
+    try {
+      $app.save(battle);
+    } catch (e) {
+      return;
+    }
+    BZLog("verify", "목표 도달 (검증 대기): " + winner + " (" + ka + " vs " + kb + ") battle=" + battle.id);
+    return;
+  }
+
   battle.set("winner", winner);
   battle.set("winner_pending", "");
   battle.set("status", "finished");
@@ -824,7 +1045,10 @@ async function BZScanBattle(battle) {
     BZDoSettle(battle);
     return { rateLimited: false, players: [] };
   }
-  if (battle.getString("status") !== "playing") return { rateLimited: false, players: [] };
+  if (battle.getString("status") !== "playing" &&
+      !(battle.getString("status") === "settling" && battle.getString("winner_pending"))) {
+    return { rateLimited: false, players: [] };
+  }
 
   const ra = await BZScanPlayer(battle, battle.getString("player_a"));
   if (ra.noKeys) return { noKeys: true };
@@ -841,7 +1065,7 @@ async function BZScanBattle(battle) {
     if (p.skipped) {
       BZLog("scan", "스캔 건너뜀 " + p.side + ": " + p.skipped + " (battle=" + battle.id + ")");
     } else {
-      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
+      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 / 수동 검증 " + (p.paired || 0) + "건 / 해소 " + (p.resolved || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
     }
   }
 
