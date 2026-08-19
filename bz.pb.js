@@ -33,9 +33,16 @@ onRecordUpdate((e) => {
 // ---------- 크론: 활성 대전 자동 스캔 (2분마다) + 주기 정리 ----------
 
 cronAdd("bz-auto-scan", "*/2 * * * *", () => {
-  const { BZAutoScanAll, BZMaintenance, BZLog } = require(`${__hooks}/bz-lib.js`);
+  const { BZAutoScanAll, BZMaintenance, BZRunMatchmakingDrain, BZLog } = require(`${__hooks}/bz-lib.js`);
   try {
     BZMaintenance();
+  } catch (err) {
+    /* 무시 */
+  }
+  // 대기열 자동 매칭: 새 등록이 없어도 최대 10쌍까지 대기자를 계속 매칭한다.
+  try {
+    const pairs = BZRunMatchmakingDrain();
+    if (pairs > 0) BZLog("match", "자동 매칭 " + pairs + "쌍");
   } catch (err) {
     /* 무시 */
   }
@@ -395,6 +402,28 @@ routerAdd("POST", "/api/bz/battles/cancel", (c) => {
     }
   }
   return c.json(200, { ok: true, message: "대전을 취소했습니다." });
+});
+
+// 대기열 취소 (참가자 본인만) — 큐 상태 변경은 이 라우트로만 가능 (bz_queue updateRule 운영자 전용)
+routerAdd("POST", "/api/bz/queue/cancel", (c) => {
+  const { BZAuth, BZBody, BZFindById } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = BZBody(c);
+  const queue = BZFindById("bz_queue", String(body.queueId || ""));
+  if (!queue) return c.json(404, { message: "대기열을 찾을 수 없습니다." });
+  if (queue.getString("user") !== me.id) {
+    return c.json(403, { message: "본인의 대기열만 취소할 수 있습니다." });
+  }
+  queue.set("status", "cancelled");
+  try {
+    // onRecordUpdate 훅 → BZHandleQueueCancel (대기 대전 취소 + 상대 큐 복구)
+    $app.save(queue);
+  } catch (e) {
+    return c.json(400, { message: "대기열 취소 실패: " + String((e && e.message) || e) });
+  }
+  return c.json(200, { ok: true, message: "대기열에서 나갔습니다." });
 });
 
 // 매칭 수동 트리거 (운영자)

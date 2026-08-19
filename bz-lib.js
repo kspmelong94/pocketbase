@@ -17,11 +17,16 @@ const BZ_ONGOING_TTL = 3 * 60 * 1000; // 진행 중 매치(404) 재조회 간격
 const BZ_VERIFY_TOL_MS = 20 * 60 * 1000; // ±20분
 const BZ_SCAN_MAX_BATTLES = 500; // 크론 틱당 스캔 대전 수 절대 상한
 const BZ_SCAN_CONCURRENCY = 6; // 동시 병렬 스캔 대전 수
+const BZ_SCAN_TICK_MS = 90000; // 스캔 틱 최대 실행 시간 (초과 시 새 대전을 꺼내지 않음)
 const BZ_SCAN_MAX_MATCHES = 4; // 플레이어당 틱당 신규 매치 처리 수
 
 // 키 레이트 리미터 (슬라이딩 윈도우 60초/10회)
 const BZ_RL_WINDOW_MS = 60000;
 const BZ_RL_MAX_PER_MIN = 10;
+
+// 키/대기열 관리 최대 개수
+const BZ_KEYS_MAX = 200;
+const BZ_MM_MAX_PAIRS_PER_TICK = 10; // 크론 틱당 최대 매칭 쌍 수
 
 // ---------- 기본 유틸 ----------
 
@@ -219,7 +224,7 @@ function BZHasEnabledKeys() {
 function BZAcquireKey() {
   let keys = [];
   try {
-    keys = $app.findRecordsByFilter("bz_pubg_keys", "enabled = true", "label", 50, 0);
+    keys = $app.findRecordsByFilter("bz_pubg_keys", "enabled = true", "label", BZ_KEYS_MAX, 0);
   } catch (e) {
     return null;
   }
@@ -279,7 +284,7 @@ function BZMarkKeyFailure(key, reason) {
 function BZRateUsage() {
   let keys = [];
   try {
-    keys = $app.findRecordsByFilter("bz_pubg_keys", "", "label", 50, 0);
+    keys = $app.findRecordsByFilter("bz_pubg_keys", "", "label", BZ_KEYS_MAX, 0);
   } catch (e) {
     return [];
   }
@@ -299,7 +304,7 @@ function BZRateUsage() {
  */
 function BZScanCapacity() {
   try {
-    const keys = $app.findRecordsByFilter("bz_pubg_keys", "enabled = true", "", 50, 0);
+    const keys = $app.findRecordsByFilter("bz_pubg_keys", "enabled = true", "", BZ_KEYS_MAX, 0);
     return Math.min(BZ_SCAN_MAX_BATTLES, (keys || []).length * 8);
   } catch (e) {
     return 0;
@@ -1166,7 +1171,8 @@ async function BZScanBattle(battle) {
   for (const p of players) {
     if (p.skipped) {
       BZLog("scan", "스캔 건너뜀 " + p.side + ": " + p.skipped + " (battle=" + battle.id + ")");
-    } else {
+    } else if ((p.added || 0) > 0 || (p.confirmed || 0) > 0 || (p.paired || 0) > 0 || (p.resolved || 0) > 0 || (p.detailErrors || 0) > 0) {
+      // 변경이 없는 스캔은 로그 생략 (로그 노이즈/볼륨 방지)
       BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 / 수동 검증 " + (p.paired || 0) + "건 / 해소 " + (p.resolved || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
     }
   }
@@ -1308,10 +1314,14 @@ async function BZAutoScanAll() {
     const targets = battles.slice(0, limit);
     let scanned = 0;
     let stopped = false;
+    const tickStart = Date.now();
     // 병렬 스캔: 키 레이트 리미터(BZAcquireKey)가 1분 10회 초과를 차단하므로
     // 여러 워커가 동시에 돌아도 PUBG API를 초과 호출하지 않는다.
+    // 데드라인(BZ_SCAN_TICK_MS) 이후에는 새 대전을 꺼내지 않아
+    // PUBG API 장애(15초 타임아웃 × 대전당 2회) 시에도 틱이 수십 분 걸리는 것을 방지한다.
     const worker = async () => {
       while (!stopped) {
+        if (Date.now() - tickStart > BZ_SCAN_TICK_MS) return;
         const battle = targets.shift();
         if (!battle) return;
         const res = await BZScanBattle(battle);
@@ -1424,6 +1434,22 @@ function BZRunMatchmaking() {
   }
 }
 
+/**
+ * 대기열을 묶음으로 매칭 (크론용). 새 등록이 없어도 대기자를 계속 매칭한다.
+ * 호출당 최대 maxPairs 쌍까지 순차 성사시킨다.
+ * @returns {number} 성사된 대전 수
+ */
+function BZRunMatchmakingDrain(maxPairs) {
+  const cap = maxPairs ?? BZ_MM_MAX_PAIRS_PER_TICK;
+  let pairs = 0;
+  while (pairs < cap) {
+    const made = BZRunMatchmaking();
+    if (!made) break;
+    pairs += made;
+  }
+  return pairs;
+}
+
 /** 대기열 취소 시 대기(pending) 대전 취소 + 상대 큐 복구 */
 function BZHandleQueueCancel(battleId, userId) {
   const battle = BZFindById("bz_battles", battleId);
@@ -1500,5 +1526,6 @@ module.exports = {
   BZAutoScanAll: BZAutoScanAll,
   BZMaintenance: BZMaintenance,
   BZRunMatchmaking: BZRunMatchmaking,
+  BZRunMatchmakingDrain: BZRunMatchmakingDrain,
   BZHandleQueueCancel: BZHandleQueueCancel,
 };
