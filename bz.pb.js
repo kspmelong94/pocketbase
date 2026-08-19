@@ -103,7 +103,29 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
   const nickname = String(body.nickname || "").trim();
   if (!nickname) return c.json(400, { message: "닉네임이 필요합니다." });
   const pid = await BZResolvePlayerId(nickname);
-  if (pid.noKeys) return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않았습니다. 관리자 설정에서 등록해 주세요." });
+  if (pid.noKeys) {
+    // 원인 구분 진단: 컬렉션 미존재 / 키 0건 / 활성 키 0건
+    let detail = "";
+    try {
+      $app.findCollectionByNameOrId("bz_pubg_keys");
+      let total = 0;
+      let enabled = 0;
+      try {
+        total = $app.countRecords("bz_pubg_keys");
+      } catch (e) {
+        /* 무시 */
+      }
+      try {
+        enabled = $app.countRecords("bz_pubg_keys", "enabled = true");
+      } catch (e) {
+        /* 무시 */
+      }
+      detail = ` (키 ${total}건 중 활성 ${enabled}건)`;
+    } catch (e) {
+      detail = " (bz_pubg_keys 컬렉션 없음 — 관리자 동기화 실행 필요)";
+    }
+    return c.json(200, { ok: false, message: "PUBG API 키가 등록되지 않았습니다. 관리자 설정에서 등록해 주세요." + detail });
+  }
   if (pid.rateLimited) return c.json(200, { ok: false, message: "PUBG API 호출 한도 초과" });
   if (pid.notFound) return c.json(200, { ok: false, message: "닉네임을 찾을 수 없습니다." });
   if (pid.error) return c.json(200, { ok: false, message: pid.error });
