@@ -15,7 +15,8 @@ const BZ_ONGOING_TTL = 3 * 60 * 1000; // 진행 중 매치(404) 재조회 간격
 // 배틀 시작(시작 확인) 시각과 실제 PUBG 매치 시작 시각은 순서가 뒤바뀔 수 있으므로
 // (매치 참가 후 시작 확인 / 시작 확인 후 참가) 자동 스캔 시 배틀 시작 시각 대비 허용 오차로 사용한다.
 const BZ_VERIFY_TOL_MS = 20 * 60 * 1000; // ±20분
-const BZ_SCAN_MAX_BATTLES = 5; // 크론 틱당 스캔 대전 수
+const BZ_SCAN_MAX_BATTLES = 500; // 크론 틱당 스캔 대전 수 절대 상한
+const BZ_SCAN_CONCURRENCY = 6; // 동시 병렬 스캔 대전 수
 const BZ_SCAN_MAX_MATCHES = 4; // 플레이어당 틱당 신규 매치 처리 수
 
 // 키 레이트 리미터 (슬라이딩 윈도우 60초/10회)
@@ -290,6 +291,19 @@ function BZRateUsage() {
     used: BZWindowOf(k.id, now).length,
     limit: BZ_RL_MAX_PER_MIN,
   }));
+}
+
+/**
+ * 2분 틱당 스캔 가능한 대전 수 (키 1개 = 10회/분, 대전당 2회 필요 → ×8 여유 마진).
+ * 키를 추가하면 다음 틱부터 자동으로 스캔 범위가 늘어난다. 절대 상한은 BZ_SCAN_MAX_BATTLES.
+ */
+function BZScanCapacity() {
+  try {
+    const keys = $app.findRecordsByFilter("bz_pubg_keys", "enabled = true", "", 50, 0);
+    return Math.min(BZ_SCAN_MAX_BATTLES, (keys || []).length * 8);
+  } catch (e) {
+    return 0;
+  }
 }
 
 // ---------- PUBG API ----------
@@ -1135,6 +1149,9 @@ async function BZScanBattle(battle) {
     return { rateLimited: false, players: [] };
   }
 
+  // 공평 순환용: 마지막 스캔 시각 기록 (끝의 $app.save 와 함께 저장됨)
+  battle.set("last_scanned_at", BZNow());
+
   const ra = await BZScanPlayer(battle, battle.getString("player_a"));
   if (ra.noKeys) return { noKeys: true };
   if (ra.rateLimited) return { rateLimited: true };
@@ -1258,7 +1275,7 @@ function BZMaintenance() {
   }
 }
 
-/** 활성 대전 전체 자동 스캔 (크론용) */
+/** 활성 대전 전체 자동 스캔 (크론용) — 키 수에 맞춘 동적 캡 + 병렬 처리 + 공평 순환 */
 async function BZAutoScanAll() {
   if ($app.store().get("bz_scan_busy")) return { ok: false, busy: true };
   $app.store().set("bz_scan_busy", true);
@@ -1269,22 +1286,52 @@ async function BZAutoScanAll() {
         "bz_battles",
         "status = 'playing' || status = 'settling'",
         "created",
-        BZ_SCAN_MAX_BATTLES,
+        2000,
         0
       );
     } catch (e) {
       return { ok: false };
     }
-    let scanned = 0;
-    for (const battle of battles) {
-      const res = await BZScanBattle(battle);
-      if (res.noKeys) {
-        BZLog("scan", "자동 스캔 중단: 등록된 PUBG API 키가 없습니다. 관리자 설정에서 등록해 주세요.");
-        break;
-      }
-      if (res.rateLimited) break;
-      scanned++;
+    // 공평 순환: 가장 오래 스캔 안 된 대전부터 (미스캔된 대전 = 빈 문자열 = 항상 우선)
+    battles.sort((a, b) => {
+      const la = a.getString("last_scanned_at") || "";
+      const lb = b.getString("last_scanned_at") || "";
+      return la.localeCompare(lb);
+    });
+
+    const limit = BZScanCapacity();
+    if (limit <= 0) {
+      BZLog("scan", "스캔 중단: 사용 가능한 PUBG API 키가 없습니다. 관리자 설정에서 키를 등록해 주세요.");
+      return { ok: true, scanned: 0 };
     }
+
+    const targets = battles.slice(0, limit);
+    let scanned = 0;
+    let stopped = false;
+    // 병렬 스캔: 키 레이트 리미터(BZAcquireKey)가 1분 10회 초과를 차단하므로
+    // 여러 워커가 동시에 돌아도 PUBG API를 초과 호출하지 않는다.
+    const worker = async () => {
+      while (!stopped) {
+        const battle = targets.shift();
+        if (!battle) return;
+        const res = await BZScanBattle(battle);
+        if (res.noKeys) {
+          stopped = true;
+          return;
+        }
+        if (res.rateLimited) {
+          stopped = true;
+          BZLog("scan", "스캔 중단: PUBG API 키 한도 도달 (" + targets.length + "개 대전 다음 틱으로 대기)");
+          return;
+        }
+        scanned++;
+      }
+    };
+    const workers = Array.from(
+      { length: Math.min(BZ_SCAN_CONCURRENCY, targets.length) },
+      () => worker()
+    );
+    await Promise.all(workers);
     return { ok: true, scanned };
   } finally {
     $app.store().set("bz_scan_busy", false);
