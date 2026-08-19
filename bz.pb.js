@@ -246,6 +246,18 @@ routerAdd("POST", "/api/bz/battles/round-delete", (c) => {
   return c.json(200, { ok: true, message: "기록을 삭제했습니다." });
 });
 
+// 대전 라운드 목록 (참가자 전용) — bz_battle_rounds 레코드 조회
+routerAdd("GET", "/api/bz/battles/rounds", (c) => {
+  const { BZAuth, BZFindById, BZSideOf, BZBattleRounds } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const battle = BZFindById("bz_battles", String(c.queryParam("battleId") || c.queryParam("battle_id") || ""));
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
+  return c.json(200, { ok: true, rounds: BZBattleRounds(battle) });
+});
+
 // 대전 즉시 스캔 (게임 기록 추가/검증) — 참가자용 "지금 확인" 버튼
 routerAdd("POST", "/api/bz/battles/scan", async (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZScanBattle } = require(`${__hooks}/bz-lib.js`);

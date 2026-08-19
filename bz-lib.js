@@ -111,88 +111,95 @@ function BZLog(kind, message) {
   }
 }
 
-// ---------- 내장 라운드 배열 헬퍼 (bz_battles.rounds) ----------
+// ---------- 라운드 헬퍼 (bz_battle_rounds 컬렉션, 레코드 단위) ----------
+//
+// 라운드는 bz_battle_rounds 에 레코드 1건씩 저장한다.
+// 과거에는 bz_battles.rounds(JSON 배열)에 양쪽 라운드를 함께 넣어 저장할 때마다 배열 전체를
+// 덮어썼기 때문에, 나/상대가 동시에 수동 기록을 추가하면 마지막 저장이 이전 기록을 지우는
+// lost-update 가 발생했다. 레코드 단위(INSERT/UPDATE 1건)는 서로 독립적이어서 이 문제가 원천 차단된다.
 
-/** 라운드 고유 ID 생성 */
+const BZ_ROUND_FIELDS = [
+  "player",
+  "round_number",
+  "status",
+  "kills_manual",
+  "kills_api",
+  "kills_final",
+  "map",
+  "placement",
+  "match_id",
+  "game_started_at",
+  "verified_at",
+  "note",
+];
+
+/** 라운드 레코드를 평면 객체로 변환 */
+function BZRoundExport(rec) {
+  const plain = { id: rec.id, created: rec.getString("created") };
+  for (const f of BZ_ROUND_FIELDS) plain[f] = rec.get(f);
+  return plain;
+}
+
+/** 라운드 고유 ID 생성 (컬렉션 id와 구분되는 임시 식별자) */
 function BZRoundId() {
   return "r_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
 }
 
-/** 배틀의 라운드 배열 (원본 참조가 아닌 복사본) */
+/** 배틀의 라운드 목록 (created 오름차순). 원본 참조가 아닌 복사본을 반환한다. */
 function BZBattleRounds(battle) {
-  const rounds = battle.get("rounds");
-  return Array.isArray(rounds) ? rounds.map((r) => ({ ...r })) : [];
+  try {
+    return $app
+      .findRecordsByFilter("bz_battle_rounds", "battle = {:b}", "-created", 0, 0, { b: battle.id })
+      .map((r) => BZRoundExport(r))
+      .sort((a, b) => String(a.created || "").localeCompare(String(b.created || "")));
+  } catch (e) {
+    return [];
+  }
 }
 
-/**
- * 라운드 배열을 최신 DB 상태에 병합해 저장한다.
- * - 저장 직전 최신 레코드를 다시 읽어 동시 수정(상대방 수동 기록, 자동 스캔 커밋)을 보존한다.
- * - 같은 라운드 id: 새 값(전달 배열) 우선, 최신에만 있는 라운드: 유지, 전달 배열에만 있는 라운드: 추가.
- * - 서버 코드에서 라운드 배열을 통째로 덮어쓰는 저장($app.save(battle))을 하면
- *   스캔(비동기)과 수동 기록이 서로 상대의 변경을 지우는 lost-update 가 발생하므로 반드시 이 함수로 저장한다.
- * @returns {object|null} 저장된 최신 배틀 레코드 (없으면 null)
- */
-function BZPersistRounds(battleId, rounds) {
-  const fresh = BZFindById("bz_battles", battleId);
-  if (!fresh) return null;
-  const freshRounds = BZBattleRounds(fresh);
-  const merged = [];
-  const seen = new Set();
-  for (const r of freshRounds) {
-    seen.add(r.id);
-    const mine = rounds.find((x) => x.id === r.id);
-    merged.push(mine ? { ...r, ...mine } : r);
-  }
-  for (const r of rounds) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    merged.push(r);
-  }
-  fresh.set("rounds", merged);
-  $app.save(fresh);
-  return fresh;
-}
-
-/** 라운드 추가 (최신 상태에 병합 저장). @returns {object|null} 추가된 라운드 */
+/** 라운드 INSERT (레코드 단위 — 동시 추가 안전). @returns {object|null} 추가된 라운드 */
 function BZRoundAdd(battle, data) {
-  const fresh = BZFindById("bz_battles", battle.id);
-  if (!fresh) return null;
-  const round = {
-    id: BZRoundId(),
-    created: BZNow(),
-    ...data,
-  };
-  const rounds = BZBattleRounds(fresh);
-  rounds.push(round);
-  fresh.set("rounds", rounds);
-  $app.save(fresh);
-  return round;
+  const round = { id: BZRoundId(), created: BZNow(), ...data };
+  try {
+    const rec = new Record($app.findCollectionByNameOrId("bz_battle_rounds"));
+    rec.set("battle", battle.id);
+    for (const f of BZ_ROUND_FIELDS) {
+      if (round[f] !== undefined && round[f] !== null) rec.set(f, round[f]);
+    }
+    rec.set("created", round.created);
+    $app.save(rec);
+    round.id = rec.id;
+    return round;
+  } catch (e) {
+    return null;
+  }
 }
 
-/** 라운드 수정 (최신 상태에 병합 저장). @returns {object|null} 수정된 라운드 */
+/** 라운드 UPDATE (레코드 단위). @returns {object|null} 수정된 라운드 */
 function BZRoundUpdate(battle, roundId, patch) {
-  const fresh = BZFindById("bz_battles", battle.id);
-  if (!fresh) return null;
-  const rounds = BZBattleRounds(fresh);
-  const idx = rounds.findIndex((r) => r.id === roundId);
-  if (idx < 0) return null;
-  rounds[idx] = { ...rounds[idx], ...patch };
-  fresh.set("rounds", rounds);
-  $app.save(fresh);
-  return rounds[idx];
+  try {
+    const rec = $app.findRecordById("bz_battle_rounds", roundId);
+    if (!rec || rec.getString("battle") !== battle.id) return null;
+    for (const f of BZ_ROUND_FIELDS) {
+      if (patch[f] !== undefined) rec.set(f, patch[f]);
+    }
+    $app.save(rec);
+    return BZRoundExport(rec);
+  } catch (e) {
+    return null;
+  }
 }
 
-/** 라운드 삭제 (최신 상태에 병합 저장). @returns {boolean} 삭제 여부 */
+/** 라운드 DELETE (레코드 단위). @returns {boolean} 삭제 여부 */
 function BZRoundRemove(battle, roundId) {
-  const fresh = BZFindById("bz_battles", battle.id);
-  if (!fresh) return false;
-  const rounds = BZBattleRounds(fresh);
-  const idx = rounds.findIndex((r) => r.id === roundId);
-  if (idx < 0) return false;
-  rounds.splice(idx, 1);
-  fresh.set("rounds", rounds);
-  $app.save(fresh);
-  return true;
+  try {
+    const rec = $app.findRecordById("bz_battle_rounds", roundId);
+    if (!rec || rec.getString("battle") !== battle.id) return false;
+    $app.delete(rec);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 /** 플레이어 라운드 목록 (created 오름차순) */
@@ -620,8 +627,8 @@ function BZDoSettle(battle) {
   const finishedAt = battle.getString("finished_at") || BZNow();
   const killsA = battle.getInt("kills_a");
   const killsB = battle.getInt("kills_b");
-  // 라운드 배열에서 총 킬수 재계산
-  const rounds = battle.get("rounds") || [];
+  // 라운드 레코드에서 총 킬수 재계산
+  const rounds = BZBattleRounds(battle);
   let totalKillsA = 0;
   let totalKillsB = 0;
   for (const r of rounds) {
@@ -765,18 +772,45 @@ async function BZScanPlayer(battle, playerId) {
   if (list.rateLimited) return { rateLimited: true };
   if (list.error) return { rateLimited: false, skipped: "매치 목록 조회 실패: " + list.error };
 
-  // 내장 라운드 배열 (평면 객체 배열 — 수정 후 배틀 저장은 commit()으로 일괄 처리)
+  // 라운드 목록 (bz_battle_rounds 레코드 단위 — 수정 후 저장은 commit()으로 일괄 처리)
   const rounds = BZBattleRounds(battle);
   let dirty = false;
+  const origJson = new Map(); // 라운드별 원본 스냅샷 (변경 감지)
+  const knownIds = new Set();
+  for (const r of rounds) {
+    knownIds.add(r.id);
+    origJson.set(r.id, JSON.stringify(r));
+  }
   const commit = () => {
     if (!dirty) return;
     dirty = false;
     try {
-      // 스캔 시작 시점 스냅샷을 통째로 덮어쓰지 않고 최신 DB 상태에 병합 저장 —
-      // 스캔 중(비동기 API 호출) 추가된 수동 기록이 지워지는 문제 방지
-      BZPersistRounds(battle.id, rounds);
+      for (const r of rounds) {
+        if (!knownIds.has(r.id)) {
+          // 스캔 중 새로 추가된 라운드 → 레코드 INSERT (기존 레코드와 독립적이라 안전)
+          const rec = new Record($app.findCollectionByNameOrId("bz_battle_rounds"));
+          rec.set("battle", battle.id);
+          for (const f of BZ_ROUND_FIELDS) {
+            if (r[f] !== undefined && r[f] !== null) rec.set(f, r[f]);
+          }
+          rec.set("created", r.created || BZNow());
+          $app.save(rec);
+          r.id = rec.id;
+          knownIds.add(r.id);
+          origJson.set(r.id, JSON.stringify(r));
+          continue;
+        }
+        if (origJson.get(r.id) === JSON.stringify(r)) continue; // 변경 없음
+        const rec = $app.findRecordById("bz_battle_rounds", r.id);
+        if (!rec) continue; // 사용자가 방금 삭제한 기록
+        for (const f of BZ_ROUND_FIELDS) {
+          if (r[f] !== undefined && r[f] !== null) rec.set(f, r[f]);
+        }
+        $app.save(rec);
+        origJson.set(r.id, JSON.stringify(r));
+      }
     } catch (e) {
-      BZLog("scan", "라운드 배열 저장 실패 (battle=" + battle.id + ") " + String((e && e.message) || e));
+      BZLog("scan", "라운드 저장 실패 (battle=" + battle.id + ") " + String((e && e.message) || e));
     }
   };
 
@@ -1580,7 +1614,6 @@ module.exports = {
   BZRoundRemove: BZRoundRemove,
   BZRoundsOfPlayer: BZRoundsOfPlayer,
   BZRoundAddValidate: BZRoundAddValidate,
-  BZPersistRounds: BZPersistRounds,
   BZRecomputeKills: BZRecomputeKills,
   BZCheckWin: BZCheckWin,
   BZRefreshBattleOutcome: BZRefreshBattleOutcome,
