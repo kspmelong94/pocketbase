@@ -153,6 +153,7 @@ function BZBattleRounds(battle) {
       .map((r) => BZRoundExport(r))
       .sort((a, b) => String(a.created || "").localeCompare(String(b.created || "")));
   } catch (e) {
+    BZLog("round", "라운드 조회 실패 (battle=" + battle.id + ") " + String((e && e.message) || e));
     return [];
   }
 }

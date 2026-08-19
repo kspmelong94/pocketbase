@@ -252,7 +252,32 @@ routerAdd("GET", "/api/bz/battles/rounds", (c) => {
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
-  const battle = BZFindById("bz_battles", String(c.queryParam("battleId") || c.queryParam("battle_id") || ""));
+  // queryParam 미지원 구버전에서도 동작하도록 URL 에서 직접 추출
+  let battleId = "";
+  try {
+    battleId = String(c.queryParam("battleId") || c.queryParam("battle_id") || "");
+  } catch (e) {
+    /* 무시 */
+  }
+  if (!battleId) {
+    const qm = String(c.request.url || "").indexOf("?");
+    if (qm >= 0) {
+      const q = String(c.request.url || "").slice(qm + 1);
+      for (const part of q.split("&")) {
+        const [k, v] = part.split("=");
+        if ((k === "battleId" || k === "battle_id") && v) {
+          try {
+            battleId = decodeURIComponent(v);
+          } catch (e2) {
+            battleId = v;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  const battle = BZFindById("bz_battles", String(battleId || ""));
   if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
   return c.json(200, { ok: true, rounds: BZBattleRounds(battle) });
