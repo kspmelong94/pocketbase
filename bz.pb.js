@@ -180,7 +180,7 @@ routerAdd("POST", "/api/bz/battles/confirm-start", (c) => {
 
 // 수동 기록 추가 (참가자) — bz_battles.rounds 배열에 추가
 routerAdd("POST", "/api/bz/battles/round-add", (c) => {
-  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundAddValidate, BZRoundAdd, BZRefreshBattleOutcome } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundAddValidate, BZRoundAdd, BZRefreshBattleOutcome, BZ_MAP_ALLOWLIST } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -195,6 +195,9 @@ routerAdd("POST", "/api/bz/battles/round-add", (c) => {
   }
   const map = String(body.map || "").trim();
   if (!map) return c.json(400, { message: "맵을 선택해 주세요." });
+  if (BZ_MAP_ALLOWLIST.indexOf(map) < 0) {
+    return c.json(400, { message: "기록 가능한 맵이 아닙니다. (에란겔/미라마/사녹/태이고/데스턴/비켄디/론도)" });
+  }
   const placement = Number(body.placement || 0);
   if (!Number.isInteger(placement) || placement < 1 || placement > 100) {
     return c.json(400, { message: "등수는 1~100 사이로 입력해 주세요." });
@@ -310,6 +313,7 @@ routerAdd("POST", "/api/bz/battles/scan", async (c) => {
       const mf = p.matchesFound || 0;
       if (mf === 0) why += " (최근 매치 없음)";
       else if (p.oldMatches > 0) why += " (매치 " + mf + "개 중 " + p.oldMatches + "개 대전 시작 이전)";
+      else if (p.mapSkipped > 0) why += " (기타 맵 제외 " + p.mapSkipped + "건)";
       else if (p.detailErrors > 0) why += " (상세 조회 실패 " + p.detailErrors + "건)";
       else if (p.noCreatedAt > 0) why += " (시각 정보 없음 " + p.noCreatedAt + "건)";
       return p.side + ": " + why;

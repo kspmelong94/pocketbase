@@ -133,6 +133,24 @@ const BZ_ROUND_FIELDS = [
   "note",
 ];
 
+// ---------- 기록 대상 맵 화이트리스트 ----------
+// 수동 기록 폼(PUBG_RECORD_MAP_KEYS)과 동일한 7종 일반 매치 로테이션 맵만
+// 검증/자동 기록에 포함한다. 훈련장(Range_Main) 등 기타 맵 매치는 기록에서 제외한다.
+const BZ_MAP_ALLOWLIST = [
+  "Erangel_Main", // 에란겔
+  "Desert_Main", // 미라마
+  "Savage_Main", // 사녹
+  "Tiger_Main", // 태이고
+  "Chimera_Main", // 데스턴
+  "DihorOtok_Main", // 비켄디
+  "Rondo_Main", // 론도
+];
+
+/** 매치 맵이 기록 대상(7종)인지 여부. mapName 이 비어 있으면 false (보수적 판정) */
+function BZMapAllowed(mapName) {
+  return Boolean(mapName) && BZ_MAP_ALLOWLIST.indexOf(mapName) >= 0;
+}
+
 /** 라운드 레코드를 평면 객체로 변환 */
 function BZRoundExport(rec) {
   const plain = { id: rec.id, created: rec.getString("created") };
@@ -848,6 +866,7 @@ async function BZScanPlayer(battle, playerId) {
   let detailErrors = 0;
   let noCreatedAt = 0;
   let oldMatches = 0;
+  let mapSkipped = 0;
   let paired = 0;
   const completed = [];
   for (const matchId of list.ids) {
@@ -864,6 +883,12 @@ async function BZScanPlayer(battle, playerId) {
     }
     if (detail.ongoing) {
       // 진행 중 매치 → 기록 추가 후 다음 틱에서 재확인
+      // (맵 정보가 있으면 화이트리스트 외 맵은 제외 — 훈련장 등)
+      if (detail.mapName && !BZMapAllowed(detail.mapName)) {
+        mapSkipped++;
+        recorded.add(matchId);
+        continue;
+      }
       nextNumber++;
       rounds.push({
         id: BZRoundId(),
@@ -894,6 +919,12 @@ async function BZScanPlayer(battle, playerId) {
     }
     if (!createdMs) {
       noCreatedAt++;
+      continue;
+    }
+    // 기록 대상 맵(7종) 외 매치는 제외 (훈련장, 카라킨, 파라모 등)
+    if (!BZMapAllowed(detail.mapName)) {
+      mapSkipped++;
+      recorded.add(matchId);
       continue;
     }
 
@@ -1049,6 +1080,15 @@ async function BZScanPlayer(battle, playerId) {
     }
     if (detail.error || detail.ongoing) continue;
 
+    // 기록 대상 맵(7종) 외 매치는 무효 처리 (진행 중 등록 후 종료 시점에 판정)
+    if (!BZMapAllowed(detail.mapName)) {
+      r.status = "void";
+      r.note = "기타 맵 매치 (기록 제외)";
+      dirty = true;
+      mapSkipped++;
+      continue;
+    }
+
     const createdMs = detail.createdAt ? new Date(detail.createdAt).getTime() : 0;
     if (minMs && createdMs && createdMs < minMs) {
       // 배틀 시작 이전에 시작된 매치 → 무효
@@ -1086,6 +1126,7 @@ async function BZScanPlayer(battle, playerId) {
     detailErrors,
     noCreatedAt,
     oldMatches,
+    mapSkipped,
   };
 }
 
@@ -1271,9 +1312,9 @@ async function BZScanBattle(battle) {
   for (const p of players) {
     if (p.skipped) {
       BZLog("scan", "스캔 건너뜀 " + p.side + ": " + p.skipped + " (battle=" + battle.id + ")");
-    } else if ((p.added || 0) > 0 || (p.confirmed || 0) > 0 || (p.paired || 0) > 0 || (p.resolved || 0) > 0 || (p.detailErrors || 0) > 0) {
+    } else if ((p.added || 0) > 0 || (p.confirmed || 0) > 0 || (p.paired || 0) > 0 || (p.resolved || 0) > 0 || (p.detailErrors || 0) > 0 || (p.mapSkipped || 0) > 0) {
       // 변경이 없는 스캔은 로그 생략 (로그 노이즈/볼륨 방지)
-      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 / 수동 검증 " + (p.paired || 0) + "건 / 해소 " + (p.resolved || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
+      BZLog("scan", "스캔 완료 " + p.side + ": 추가 " + (p.added || 0) + "건 / 확정 " + (p.confirmed || 0) + "건 / 수동 검증 " + (p.paired || 0) + "건 / 해소 " + (p.resolved || 0) + "건, 매치 " + (p.matchesFound || 0) + "개 중 이전 " + (p.oldMatches || 0) + "개, 기타 맵 제외 " + (p.mapSkipped || 0) + "건, 상세 오류 " + (p.detailErrors || 0) + "건 (battle=" + battle.id + ")");
     }
   }
 
