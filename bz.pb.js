@@ -6,22 +6,9 @@
 // ---------- 훅 ----------
 
 onRecordCreate((e) => {
-  try {
-    if (e.record.collection().name === "kill_rounds" && e.record.getString("status") === "manual") {
-      // 고의적 임의 기록 방지: 진행 중 대전 참가자 + 5분 간격 + 검증 대기 3건 상한
-      const { BZValidateManualRound } = require(`${__hooks}/bz-lib.js`);
-      const err = BZValidateManualRound(e.record);
-      if (err) {
-        e.next(new Error(err));
-        return;
-      }
-    }
-  } catch (err) {
-    /* 검증 실패 시 차단하지 않음 (허용 최소화) */
-  }
   e.next();
   try {
-    if (e.record.collection().name === "kill_queue" && e.record.getString("status") === "waiting") {
+    if (e.record.collection().name === "bz_queue" && e.record.getString("status") === "waiting") {
       const { BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
       BZRunMatchmaking();
     }
@@ -34,7 +21,7 @@ onRecordUpdate((e) => {
   const { BZHandleQueueCancel } = require(`${__hooks}/bz-lib.js`);
   e.next();
   try {
-    if (e.record.collection().name === "kill_queue" && e.record.getString("status") === "cancelled") {
+    if (e.record.collection().name === "bz_queue" && e.record.getString("status") === "cancelled") {
       const bid = e.record.getString("battle_id");
       if (bid) BZHandleQueueCancel(bid, e.record.getString("user"));
     }
@@ -82,7 +69,7 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
     if (me.getString("role") !== "operator") {
       return c.json(403, { message: "운영자 전용입니다." });
     }
-    key = BZFindById("pubg_keys", String(body.keyId || ""));
+    key = BZFindById("bz_pubg_keys", String(body.keyId || ""));
     if (!key) return c.json(404, { message: "키를 찾을 수 없습니다." });
   }
 
@@ -123,6 +110,106 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
   return c.json(200, { ok: true, nickname, playerId: pid.playerId });
 });
 
+// 시작 확인 (대기 상태에서 참가자가 게임 시작을 확인)
+routerAdd("POST", "/api/bz/battles/confirm-start", (c) => {
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZNow } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = BZBody(c);
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  const side = BZSideOf(battle, me.id);
+  if (!side) return c.json(403, { message: "대전 참가자가 아닙니다." });
+  if (battle.getString("status") !== "pending") {
+    return c.json(400, { message: "대기 상태의 대전만 시작 확인할 수 있습니다." });
+  }
+
+  if (side === "a") battle.set("started_a", true);
+  else battle.set("started_b", true);
+  const bothStarted = battle.getBool("started_a") && battle.getBool("started_b");
+  if (bothStarted) {
+    battle.set("status", "playing");
+    battle.set("playing_at", BZNow());
+  }
+  $app.save(battle);
+  return c.json(200, {
+    ok: true,
+    status: battle.getString("status"),
+    started_a: battle.getBool("started_a"),
+    started_b: battle.getBool("started_b"),
+    message: bothStarted ? "대전이 시작되었습니다." : "시작 확인이 완료되었습니다.",
+  });
+});
+
+// 수동 기록 추가 (참가자) — bz_battles.rounds 배열에 추가
+routerAdd("POST", "/api/bz/battles/round-add", (c) => {
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundAddValidate, BZRoundAdd, BZRecomputeKills, BZCheckWin } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = BZBody(c);
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
+
+  const kills = Number(body.kills || 0);
+  if (!Number.isInteger(kills) || kills < 0 || kills > 30) {
+    return c.json(400, { message: "킬수는 0~30 사이의 정수여야 합니다." });
+  }
+  const map = String(body.map || "").trim();
+  if (!map) return c.json(400, { message: "맵을 선택해 주세요." });
+  const placement = Number(body.placement || 0);
+  if (!Number.isInteger(placement) || placement < 1 || placement > 100) {
+    return c.json(400, { message: "등수는 1~100 사이로 입력해 주세요." });
+  }
+  const err = BZRoundAddValidate(battle, me.id);
+  if (err) return c.json(400, { message: err });
+
+  let nextNumber = 0;
+  for (const r of BZRoundsOfPlayer(battle, me.id)) {
+    nextNumber = Math.max(nextNumber, Number(r.round_number) || 0);
+  }
+  const round = BZRoundAdd(battle, {
+    player: me.id,
+    round_number: nextNumber + 1,
+    status: "manual",
+    kills_manual: kills,
+    map,
+    placement,
+    note: "수동 입력 (검증 대기)",
+  });
+  BZRecomputeKills(battle);
+  BZCheckWin(battle);
+  return c.json(200, { ok: true, round });
+});
+
+// 수동 기록 삭제 (본인 기록만, 진행 중 대전에서만)
+routerAdd("POST", "/api/bz/battles/round-delete", (c) => {
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundRemove, BZRecomputeKills, BZCheckWin } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = BZBody(c);
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
+  if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
+  if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
+  if (battle.getString("status") !== "playing") {
+    return c.json(400, { message: "진행 중인 대전에서만 기록을 삭제할 수 있습니다." });
+  }
+
+  const roundId = String(body.roundId || "");
+  const mine = BZRoundsOfPlayer(battle, me.id).find((r) => r.id === roundId);
+  if (!mine) return c.json(404, { message: "기록을 찾을 수 없습니다." });
+  if (mine.status !== "manual") {
+    return c.json(400, { message: "검증된 기록은 삭제할 수 없습니다." });
+  }
+  BZRoundRemove(battle, roundId);
+  BZRecomputeKills(battle);
+  BZCheckWin(battle);
+  return c.json(200, { ok: true, message: "기록을 삭제했습니다." });
+});
+
 // 대전 즉시 스캔 (게임 기록 추가/검증) — 참가자용 "지금 확인" 버튼
 routerAdd("POST", "/api/bz/battles/scan", async (c) => {
   const { BZAuth, BZBody, BZFindById, BZSideOf, BZScanBattle } = require(`${__hooks}/bz-lib.js`);
@@ -130,7 +217,7 @@ routerAdd("POST", "/api/bz/battles/scan", async (c) => {
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
-  const battle = BZFindById("kill_battles", String(body.battleId || ""));
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
   if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
 
@@ -172,7 +259,7 @@ routerAdd("POST", "/api/bz/battles/settle", (c) => {
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
-  const battle = BZFindById("kill_battles", String(body.battleId || ""));
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
   if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
 
@@ -183,12 +270,12 @@ routerAdd("POST", "/api/bz/battles/settle", (c) => {
 
 // 몰수 승 신고 (상대 게임 시작 미신고)
 routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
-  const { BZAuth, BZBody, BZFindById, BZSideOf, BZOpponentOf, BZSettings, BZDoSettle } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZOpponentOf, BZSettings, BZDoSettle, BZBattleRounds } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
-  const battle = BZFindById("kill_battles", String(body.battleId || ""));
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
   if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   const side = BZSideOf(battle, me.id);
   if (!side) return c.json(403, { message: "대전 참가자가 아닙니다." });
@@ -204,16 +291,9 @@ routerAdd("POST", "/api/bz/battles/forfeit", (c) => {
   // 상대가 실제 게임 기록(verified/pending_verify)을 남겼는지 확인
   const hasOppRecords = () => {
     try {
-      const recs = $app.findRecordsByFilter(
-        "kill_rounds",
-        "battle = {:b} && player = {:p}",
-        "created",
-        50,
-        0,
-        { b: battle.id, p: opp }
-      );
+      const recs = BZBattleRounds(battle).filter((r) => r.player === opp);
       return recs.some((r) => {
-        const s = r.getString("status");
+        const s = r.status;
         return s === "verified" || s === "pending_verify" || s === "manual";
       });
     } catch (e) {
@@ -266,7 +346,7 @@ routerAdd("POST", "/api/bz/battles/cancel", (c) => {
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const body = BZBody(c);
-  const battle = BZFindById("kill_battles", String(body.battleId || ""));
+  const battle = BZFindById("bz_battles", String(body.battleId || ""));
   if (!battle) return c.json(404, { message: "대전을 찾을 수 없습니다." });
   if (!BZSideOf(battle, me.id)) return c.json(403, { message: "대전 참가자가 아닙니다." });
   if (battle.getString("status") !== "pending") {
@@ -277,7 +357,7 @@ routerAdd("POST", "/api/bz/battles/cancel", (c) => {
   $app.save(battle);
   const opp = BZOpponentOf(battle, me.id);
   if (opp) {
-    const oppQueue = BZFirst("kill_queue", "battle_id = {:b} && user = {:u} && status = 'matched'", {
+    const oppQueue = BZFirst("bz_queue", "battle_id = {:b} && user = {:u} && status = 'matched'", {
       b: battle.id,
       u: opp,
     });
