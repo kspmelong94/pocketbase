@@ -469,6 +469,49 @@ routerAdd("POST", "/api/bz/queue/cancel", (c) => {
   return c.json(200, { ok: true, message: "대기열에서 나갔습니다." });
 });
 
+// 현재 대기 인원 (실시간 표시용 — bz_queue listRule 이 공개라서 참가자 누구나 조회 가능)
+routerAdd("GET", "/api/bz/queue/count", (c) => {
+  const { BZAuth } = require(`${__hooks}/bz-lib.js`);
+  const me = BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  let season = "";
+  try {
+    season = String(c.queryParam("season") || "");
+  } catch (e) {
+    /* 무시 */
+  }
+  if (!season) {
+    const qm = String(c.request.url || "").indexOf("?");
+    if (qm >= 0) {
+      const q = String(c.request.url || "").slice(qm + 1);
+      for (const part of q.split("&")) {
+        const [k, v] = part.split("=");
+        if (k === "season" && v) {
+          try {
+            season = decodeURIComponent(v);
+          } catch (e2) {
+            season = v;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  let waiting = 0;
+  try {
+    waiting = $app.countRecords("bz_queue", "status = 'waiting' && season = {:s}", { s: season });
+  } catch (e) {
+    try {
+      waiting = $app.findRecordsByFilter("bz_queue", "status = 'waiting' && season = '" + season.replace(/'/g, "") + "'", "created", 5000, 0).length;
+    } catch (e2) {
+      waiting = 0;
+    }
+  }
+  return c.json(200, { ok: true, waiting });
+});
+
 // 매칭 수동 트리거 (운영자)
 routerAdd("POST", "/api/bz/matchmaking/run", (c) => {
   const { BZAuth, BZRunMatchmaking } = require(`${__hooks}/bz-lib.js`);
