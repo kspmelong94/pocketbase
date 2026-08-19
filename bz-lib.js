@@ -124,39 +124,74 @@ function BZBattleRounds(battle) {
   return Array.isArray(rounds) ? rounds.map((r) => ({ ...r })) : [];
 }
 
-/** 라운드 추가 (battle 저장 포함). @returns {object|null} 추가된 라운드 */
+/**
+ * 라운드 배열을 최신 DB 상태에 병합해 저장한다.
+ * - 저장 직전 최신 레코드를 다시 읽어 동시 수정(상대방 수동 기록, 자동 스캔 커밋)을 보존한다.
+ * - 같은 라운드 id: 새 값(전달 배열) 우선, 최신에만 있는 라운드: 유지, 전달 배열에만 있는 라운드: 추가.
+ * - 서버 코드에서 라운드 배열을 통째로 덮어쓰는 저장($app.save(battle))을 하면
+ *   스캔(비동기)과 수동 기록이 서로 상대의 변경을 지우는 lost-update 가 발생하므로 반드시 이 함수로 저장한다.
+ * @returns {object|null} 저장된 최신 배틀 레코드 (없으면 null)
+ */
+function BZPersistRounds(battleId, rounds) {
+  const fresh = BZFindById("bz_battles", battleId);
+  if (!fresh) return null;
+  const freshRounds = BZBattleRounds(fresh);
+  const merged = [];
+  const seen = new Set();
+  for (const r of freshRounds) {
+    seen.add(r.id);
+    const mine = rounds.find((x) => x.id === r.id);
+    merged.push(mine ? { ...r, ...mine } : r);
+  }
+  for (const r of rounds) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    merged.push(r);
+  }
+  fresh.set("rounds", merged);
+  $app.save(fresh);
+  return fresh;
+}
+
+/** 라운드 추가 (최신 상태에 병합 저장). @returns {object|null} 추가된 라운드 */
 function BZRoundAdd(battle, data) {
-  const rounds = BZBattleRounds(battle);
+  const fresh = BZFindById("bz_battles", battle.id);
+  if (!fresh) return null;
   const round = {
     id: BZRoundId(),
     created: BZNow(),
     ...data,
   };
+  const rounds = BZBattleRounds(fresh);
   rounds.push(round);
-  battle.set("rounds", rounds);
-  $app.save(battle);
+  fresh.set("rounds", rounds);
+  $app.save(fresh);
   return round;
 }
 
-/** 라운드 수정 (battle 저장 포함). @returns {object|null} 수정된 라운드 */
+/** 라운드 수정 (최신 상태에 병합 저장). @returns {object|null} 수정된 라운드 */
 function BZRoundUpdate(battle, roundId, patch) {
-  const rounds = BZBattleRounds(battle);
+  const fresh = BZFindById("bz_battles", battle.id);
+  if (!fresh) return null;
+  const rounds = BZBattleRounds(fresh);
   const idx = rounds.findIndex((r) => r.id === roundId);
   if (idx < 0) return null;
   rounds[idx] = { ...rounds[idx], ...patch };
-  battle.set("rounds", rounds);
-  $app.save(battle);
+  fresh.set("rounds", rounds);
+  $app.save(fresh);
   return rounds[idx];
 }
 
-/** 라운드 삭제 (battle 저장 포함). @returns {boolean} 삭제 여부 */
+/** 라운드 삭제 (최신 상태에 병합 저장). @returns {boolean} 삭제 여부 */
 function BZRoundRemove(battle, roundId) {
-  const rounds = BZBattleRounds(battle);
+  const fresh = BZFindById("bz_battles", battle.id);
+  if (!fresh) return false;
+  const rounds = BZBattleRounds(fresh);
   const idx = rounds.findIndex((r) => r.id === roundId);
   if (idx < 0) return false;
   rounds.splice(idx, 1);
-  battle.set("rounds", rounds);
-  $app.save(battle);
+  fresh.set("rounds", rounds);
+  $app.save(fresh);
   return true;
 }
 
@@ -736,9 +771,10 @@ async function BZScanPlayer(battle, playerId) {
   const commit = () => {
     if (!dirty) return;
     dirty = false;
-    battle.set("rounds", rounds);
     try {
-      $app.save(battle);
+      // 스캔 시작 시점 스냅샷을 통째로 덮어쓰지 않고 최신 DB 상태에 병합 저장 —
+      // 스캔 중(비동기 API 호출) 추가된 수동 기록이 지워지는 문제 방지
+      BZPersistRounds(battle.id, rounds);
     } catch (e) {
       BZLog("scan", "라운드 배열 저장 실패 (battle=" + battle.id + ") " + String((e && e.message) || e));
     }
@@ -1136,6 +1172,35 @@ function BZCheckWin(battle) {
     (settled.ok ? "" : " 정산 보류"));
 }
 
+/**
+ * 배틀을 최신 DB 상태로 재조회해 킬수/승리 상태를 재계산하고 저장한다.
+ * 호출 시점의 배틀 객체는 스냅샷일 수 있으므로(동시 수동 기록/스캔) 라운드 배열 보존을 위해
+ * 이 함수로 일괄 갱신한다. BZCheckWin 이 내부적으로 상태를 저장하면 최종 $app.save 는 멱등.
+ * @param {object} [extra] 저장 시 함께 반영할 필드 (예: { last_scanned_at })
+ * @returns {object|null} 최신 배틀 레코드
+ */
+function BZRefreshBattleOutcome(battleId, extra) {
+  const fresh = BZFindById("bz_battles", battleId);
+  if (!fresh) return null;
+  if (extra) {
+    for (const k of Object.keys(extra)) {
+      if (extra[k] !== undefined) fresh.set(k, extra[k]);
+    }
+  }
+  BZRecomputeKills(fresh);
+  try {
+    BZCheckWin(fresh);
+  } catch (e) {
+    /* 무시 */
+  }
+  try {
+    $app.save(fresh);
+  } catch (e) {
+    /* 무시 */
+  }
+  return fresh;
+}
+
 /** 대전 1건 스캔 (양쪽) */
 async function BZScanBattle(battle) {
   // 레거시 settling 대전: 승자가 확정된 상태면 즉시 종료
@@ -1177,13 +1242,8 @@ async function BZScanBattle(battle) {
     }
   }
 
-  BZRecomputeKills(battle);
-  try {
-    $app.save(battle);
-  } catch (e) {
-    /* 무시 */
-  }
-  BZCheckWin(battle);
+  // 최신 상태로 킬수/승리 재계산 — 스냅샷 배틀을 통째로 저장하지 않아 수동 기록이 보존된다
+  BZRefreshBattleOutcome(battle.id, { last_scanned_at: battle.getString("last_scanned_at") });
   return { rateLimited: false, players };
 }
 
@@ -1520,8 +1580,10 @@ module.exports = {
   BZRoundRemove: BZRoundRemove,
   BZRoundsOfPlayer: BZRoundsOfPlayer,
   BZRoundAddValidate: BZRoundAddValidate,
+  BZPersistRounds: BZPersistRounds,
   BZRecomputeKills: BZRecomputeKills,
   BZCheckWin: BZCheckWin,
+  BZRefreshBattleOutcome: BZRefreshBattleOutcome,
   BZScanBattle: BZScanBattle,
   BZAutoScanAll: BZAutoScanAll,
   BZMaintenance: BZMaintenance,

@@ -159,26 +159,28 @@ routerAdd("POST", "/api/bz/battles/confirm-start", (c) => {
     return c.json(400, { message: "대기 상태의 대전만 시작 확인할 수 있습니다." });
   }
 
-  if (side === "a") battle.set("started_a", true);
-  else battle.set("started_b", true);
-  const bothStarted = battle.getBool("started_a") && battle.getBool("started_b");
+  // 최신 상태 재조회 후 시작 확인 기록 (동시 확인 시 서로의 started_* 을 지우지 않도록)
+  const fresh = BZFindById("bz_battles", battle.id);
+  if (side === "a") fresh.set("started_a", true);
+  else fresh.set("started_b", true);
+  const bothStarted = fresh.getBool("started_a") && fresh.getBool("started_b");
   if (bothStarted) {
-    battle.set("status", "playing");
-    battle.set("playing_at", BZNow());
+    fresh.set("status", "playing");
+    fresh.set("playing_at", BZNow());
   }
-  $app.save(battle);
+  $app.save(fresh);
   return c.json(200, {
     ok: true,
-    status: battle.getString("status"),
-    started_a: battle.getBool("started_a"),
-    started_b: battle.getBool("started_b"),
+    status: fresh.getString("status"),
+    started_a: fresh.getBool("started_a"),
+    started_b: fresh.getBool("started_b"),
     message: bothStarted ? "대전이 시작되었습니다." : "시작 확인이 완료되었습니다.",
   });
 });
 
 // 수동 기록 추가 (참가자) — bz_battles.rounds 배열에 추가
 routerAdd("POST", "/api/bz/battles/round-add", (c) => {
-  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundAddValidate, BZRoundAdd, BZRecomputeKills, BZCheckWin } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundAddValidate, BZRoundAdd, BZRefreshBattleOutcome } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -213,14 +215,14 @@ routerAdd("POST", "/api/bz/battles/round-add", (c) => {
     placement,
     note: "수동 입력 (검증 대기)",
   });
-  BZRecomputeKills(battle);
-  BZCheckWin(battle);
+  // 최신 DB 상태로 킬수/승리 재계산 (스냅샷 배틀 저장 금지 — 상대 기록 보존)
+  BZRefreshBattleOutcome(battle.id);
   return c.json(200, { ok: true, round });
 });
 
 // 수동 기록 삭제 (본인 기록만, 진행 중 대전에서만)
 routerAdd("POST", "/api/bz/battles/round-delete", (c) => {
-  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundRemove, BZRecomputeKills, BZCheckWin } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZSideOf, BZRoundsOfPlayer, BZRoundRemove, BZRefreshBattleOutcome } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -239,8 +241,8 @@ routerAdd("POST", "/api/bz/battles/round-delete", (c) => {
     return c.json(400, { message: "검증된 기록은 삭제할 수 없습니다." });
   }
   BZRoundRemove(battle, roundId);
-  BZRecomputeKills(battle);
-  BZCheckWin(battle);
+  // 최신 DB 상태로 킬수/승리 재계산 (스냅샷 배틀 저장 금지 — 상대 기록 보존)
+  BZRefreshBattleOutcome(battle.id);
   return c.json(200, { ok: true, message: "기록을 삭제했습니다." });
 });
 
