@@ -58,7 +58,7 @@ cronAdd("bz-auto-scan", "*/2 * * * *", () => {
 
 // 닉네임 확인 / 키 테스트
 routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
-  const { BZAuth, BZBody, BZFindById, BZNow, BZResolvePlayerId, BZMarkKeyFailure, BZ_SHARD, BZ_API } = require(`${__hooks}/bz-lib.js`);
+  const { BZAuth, BZBody, BZFindById, BZNow, BZResolvePlayerId, BZMarkKeyFailure, BZ_API } = require(`${__hooks}/bz-lib.js`);
   const me = BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -75,8 +75,10 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
 
   if (testMode && key) {
     try {
+      // /status 는 플레이어 존재 여부와 무관하게 키 유효성만 판정한다.
+      // (플레이어 이름 필터 검색은 실존하지 않는 이름에 404 를 반환하므로 키 테스트에 부적합)
       const res = await $http.send({
-        url: BZ_API + "/shards/" + BZ_SHARD + "/players?filter%5BplayerNames%5D=BZONE_TEST",
+        url: BZ_API + "/status",
         method: "GET",
         headers: { Authorization: "Bearer " + key.getString("key"), Accept: "application/vnd.api+json" },
         timeout: 15000,
@@ -94,7 +96,10 @@ routerAdd("POST", "/api/bz/pubg/lookup", async (c) => {
       if (res.statusCode === 429) {
         return c.json(200, { ok: false, message: "키 한도 초과(429)" });
       }
-      return c.json(200, { ok: false, message: "PUBG API 응답 " + res.statusCode });
+      const pubgDetail = (res.json && res.json.errors && res.json.errors[0]
+        ? " · " + (res.json.errors[0].title || res.json.errors[0].detail || "")
+        : "");
+      return c.json(200, { ok: false, message: "PUBG API 응답 " + res.statusCode + pubgDetail });
     } catch (e) {
       return c.json(200, { ok: false, message: "PUBG API 연결 실패" });
     }
