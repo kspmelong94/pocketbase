@@ -365,7 +365,7 @@ routerAdd("POST", "/api/bz/ck/keys/test", async (c) => {
   try {
     // /valorant/v1/status/{affinity} 는 키 유효성 판정에 충분하다 (v4 부터 전체 엔드포인트 키 필수)
     const res = await $http.send({
-      url: "https://api.henrikdev.xyz/valorant/v1/status/na?api_key=" + encodeURIComponent(key.getString("key")),
+      url: "https://api.henrikdev.xyz/valorant/v1/status/ap?api_key=" + encodeURIComponent(key.getString("key")),
       method: "GET",
       headers: {
         Accept: "application/json",
