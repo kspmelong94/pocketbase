@@ -328,6 +328,7 @@ const L = require(`${__hooks}/ck-lib-all.js`);
         status: myQueue.getString("status"),
         elo: myQueue.getInt("elo"),
         queued_at: myQueue.getString("queued_at"),
+        room_id: myQueue.getString("battle_id") || "",
       } : null,
       waitingCount,
       estimatedWaitSec: Math.max(0, (waitingCount - 10) * 30), // 대략적 추정
