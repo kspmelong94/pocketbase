@@ -49,10 +49,10 @@ const L = require(`${__hooks}/ck-lib-all.js`);
 });
 
 // 자동 검증 (2분마다)
-cronAdd("ck-auto-verify", "*/2 * * * *", async () => {
+cronAdd("ck-auto-verify", "*/2 * * * *", () => {
 const L = require(`${__hooks}/ck-lib-all.js`);
   try {
-    const result = await L.CKAutoVerifyAll();
+    const result = L.CKAutoVerifyAll();
     if (result && typeof result.then === "function") {
       result.then((r) => {
         if (r && r.busy) L.BZLog("ck", "이전 검증이 아직 실행 중입니다.");
@@ -105,8 +105,9 @@ const L = require(`${__hooks}/ck-lib-all.js`);
 // ---------- API 라우트 ----------
 
 // Riot ID 등록/검증 (최초 등록 시 ELO 1000 부여)
-routerAdd("POST", "/api/ck/lookup", async (c) => {
+routerAdd("POST", "/api/ck/lookup", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);
+try {
   const me = L.BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
@@ -114,14 +115,14 @@ const L = require(`${__hooks}/ck-lib-all.js`);
   const riotId = String(body.riotId || body.riot_id || "").trim();
   if (!riotId) return c.json(400, { message: "Riot ID(이름#태그)를 입력해 주세요." });
 
-  const acc = await L.CKAccount(riotId);
+  const acc = L.CKAccount(riotId);
   if (acc.noKeys) {
     return c.json(200, { ok: false, message: "발로란트 API 키가 등록되지 않았습니다. 관리자 설정에서 등록해 주세요." });
   }
   if (acc.rateLimited) return c.json(200, { ok: false, message: "발로란트 API 호출 한도 초과" });
   if (!acc.ok) return c.json(200, { ok: false, message: acc.error || "계정을 찾을 수 없습니다." });
 
-  const mmr = await L.CKMMR(acc.puuid, acc.affinity);
+  const mmr = L.CKMMR(acc.puuid, acc.affinity);
   if (mmr.noKeys) {
     return c.json(200, { ok: false, message: "발로란트 API 키가 등록되지 않았습니다." });
   }
@@ -203,6 +204,10 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     elo,
     initialEloApplied: isFirst,
   });
+  } catch (err) {
+    console.log("[ck] lookup 예외: " + String(err));
+    return c.json(500, { ok: false, message: "lookup 내부 오류: " + String(err) });
+  }
 });
 
 // 대기열 진입
@@ -466,13 +471,13 @@ const L = require(`${__hooks}/ck-lib-all.js`);
 });
 
 // 수동 검증 트리거
-routerAdd("POST", "/api/ck/rooms/{id}/verify", async (c) => {
+routerAdd("POST", "/api/ck/rooms/{id}/verify", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);
   const me = L.BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
 
   const roomId = c.request.pathValue("id");
-  const result = await L.CKManualVerify(roomId);
+  const result = L.CKManualVerify(roomId);
   return c.json(result.ok ? 200 : 400, result);
 });
 
@@ -683,7 +688,7 @@ const L = require(`${__hooks}/ck-lib-all.js`);
 });
 
 // Mismatch 방 강제 판정
-routerAdd("POST", "/api/ck/admin/room/adjudicate", async (c) => {
+routerAdd("POST", "/api/ck/admin/room/adjudicate", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);
   const me = L.BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
@@ -710,7 +715,7 @@ const L = require(`${__hooks}/ck-lib-all.js`);
       ],
     };
 
-    const result = await L.CKDoSettlement(room, fakeMatch);
+    const result = L.CKDoSettlement(room, fakeMatch);
     return c.json(200, { ok: true, message: "강제 판정 및 정산 완료", settlement: result });
   } catch (e) {
     return c.json(400, { message: String(e) });
@@ -768,7 +773,7 @@ const L = require(`${__hooks}/ck-lib-all.js`);
 });
 
 // 키 테스트
-routerAdd("POST", "/api/ck/admin/keys/test", async (c) => {
+routerAdd("POST", "/api/ck/admin/keys/test", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);
   const me = L.BZAuth(c);
   if (!me) return c.json(401, { message: "인증이 필요합니다." });
@@ -782,7 +787,7 @@ const L = require(`${__hooks}/ck-lib-all.js`);
   if (!keyRec) return c.json(404, { message: "키를 찾을 수 없습니다." });
 
   try {
-    const res = await $http.send({
+    const res = $http.send({
       url: "https://api.henrikdev.xyz/valorant/v1/status/ap?api_key=" + encodeURIComponent(keyRec.getString("key")),
       method: "GET",
       headers: { Accept: "application/json", "User-Agent": "BattleZone-App/1.0" },

@@ -4,7 +4,7 @@
 const { CKGetSettings, CKGetCurrentSeason, CKNow, CKLog, CKSafeParse, CKEloSum, CKRankingOf, CKEnsureRanking, CKSoftResetElo } = require(`${__hooks}/ck-utils.js`);
 
 // 정산 실행
-async function CKDoSettlement(room, match) {
+function CKDoSettlement(room, match) {
   const settings = CKGetSettings();
   if (!settings) return { ok: false, error: "Settings not found" };
 

@@ -1,7 +1,7 @@
 // CK HenrikDev API 래퍼
 // 키 풀 관리, 레이트리밋, 캐시, 요청 처리
 
-const { HENRIKDEV_BASE, CK_CACHE_TTL, CK_RATE_LIMIT_PER_MIN, CKLog, CKNow, CKSafeParse } = require(`${__hooks}/ck-utils.js`);
+const { HENRIKDEV_BASE, CK_CACHE_TTL, CK_RATE_LIMIT_PER_MIN, CKLog, CKNow, CKSafeParse, CKParseRiotId } = require(`${__hooks}/ck-utils.js`);
 
 // 키 풀 상태 (메모리 캐시)
 let _keyPool = [];
@@ -156,7 +156,7 @@ function CKCacheSet(key, payload, ttlMs) {
 }
 
 // 공통 HTTP 요청 (키 자동 획득/릴리즈 + 캐시)
-async function CKValGet(endpoint, params, options = {}) {
+function CKValGet(endpoint, params, options = {}) {
   const cacheKey = options.cacheKey || endpoint + JSON.stringify(params);
   const ttl = options.ttl || CK_CACHE_TTL.matches;
 
@@ -174,7 +174,7 @@ async function CKValGet(endpoint, params, options = {}) {
   const url = HENRIKDEV_BASE + endpoint + (key ? "?api_key=" + encodeURIComponent(key) : "");
 
   try {
-    const res = await $http.send({
+    const res = $http.send({
       url,
       method: "GET",
       headers: {
@@ -214,7 +214,7 @@ async function CKValGet(endpoint, params, options = {}) {
 }
 
 // 계정 조회 (/valorant/v1/account/{name}/{tag})
-async function CKAccount(riotId) {
+function CKAccount(riotId) {
   const parsed = CKParseRiotId(riotId);
   if (!parsed) return { noKeys: true, error: "Invalid Riot ID format" };
 
@@ -222,7 +222,7 @@ async function CKAccount(riotId) {
   const cached = CKCacheGet(cacheKey);
   if (cached) return { ok: true, ...cached, cached: true };
 
-  const result = await CKValGet("/valorant/v1/account/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag), {}, {
+  const result = CKValGet("/valorant/v1/account/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag), {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.account,
   });
@@ -242,13 +242,13 @@ async function CKAccount(riotId) {
 }
 
 // MMR/티어 조회 (/valorant/v2/mmr/{region}/{puuid})
-async function CKMMR(puuid, affinity) {
+function CKMMR(puuid, affinity) {
   const cacheKey = "mmr:" + puuid + ":" + affinity;
   const cached = CKCacheGet(cacheKey);
   if (cached) return { ok: true, ...cached, cached: true };
 
   const region = "ap"; // AP 서버 고정 (한국 계정은 kr 반환 시 조회 실패 가능)
-  const result = await CKValGet("/valorant/v2/mmr/" + region + "/" + puuid, {}, {
+  const result = CKValGet("/valorant/v2/mmr/" + region + "/" + puuid, {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.mmr,
   });
@@ -267,14 +267,14 @@ async function CKMMR(puuid, affinity) {
 }
 
 // 최근 커스텀 매치 조회 (/v3/matches/{region}/{name}/{tag}?filter=custom)
-async function CKRecentCustomMatches(puuid, affinity, since) {
+function CKRecentCustomMatches(puuid, affinity, since) {
   // puuid로 계정 정보 역조회 필요 (name#tag 필요) → 랭킹에서 riot_id 사용
   // 여기서는 puuid만 받아서 name#tag를 별도 조회하거나, 랭킹에서 가져와야 함
   // 편의상 호출부에서 riot_id 전달받아 사용
   return { ok: false, error: "Use CKRecentCustomMatchesByRiotId instead" };
 }
 
-async function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
+function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
   const parsed = CKParseRiotId(riotId);
   if (!parsed) return { ok: false, error: "Invalid Riot ID" };
 
@@ -283,7 +283,7 @@ async function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
   const region = "ap"; // AP 서버 고정
   const url = "/v3/matches/" + region + "/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag) + "?filter=custom&size=20";
   
-  const result = await CKValGet(url, {}, { skipCache: true }); // 검증용은 캐시 스킵 또는 짧은 TTL
+  const result = CKValGet(url, {}, { skipCache: true }); // 검증용은 캐시 스킵 또는 짧은 TTL
   
   if (result.ok && result.data?.data) {
     return { ok: true, matches: result.data.data };
@@ -292,12 +292,12 @@ async function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
 }
 
 // 매치 상세 조회 (/v3/matches/{match_id})
-async function CKMatchDetail(matchId) {
+function CKMatchDetail(matchId) {
   const cacheKey = "matchDetail:" + matchId;
   const cached = CKCacheGet(cacheKey);
   if (cached) return { ok: true, ...cached, cached: true };
 
-  const result = await CKValGet("/v3/matches/" + matchId, {}, {
+  const result = CKValGet("/v3/matches/" + matchId, {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.matchDetail,
   });

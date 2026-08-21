@@ -27,14 +27,14 @@ function CKGetVerifiableRooms() {
 }
 
 // 방을 mismatch 상태로 변경
-async function CKSetMismatch(room) {
+function CKSetMismatch(room) {
   room.set("status", "mismatch");
   $app.save(room);
   CKLog("verification", "Mismatch 전환", { roomId: room.id });
 }
 
 // 방 검증 수행
-async function CKVerifyRoom(room) {
+function CKVerifyRoom(room) {
   const settings = CKGetSettings();
   if (!settings) return { error: "Settings not found" };
 
@@ -43,7 +43,7 @@ async function CKVerifyRoom(room) {
 
   // 최대 시도 초과
   if (attempts >= maxAttempts) {
-    await CKSetMismatch(room);
+    CKSetMismatch(room);
     return { mismatched: true };
   }
 
@@ -70,7 +70,7 @@ async function CKVerifyRoom(room) {
   const affinity = masterRanking.getString("affinity") || "ap";
 
   // 최근 커스텀 매치 폴링
-  const result = await CKRecentCustomMatchesByRiotId(riotId, affinity);
+  const result = CKRecentCustomMatchesByRiotId(riotId, affinity);
   if (!result.ok) {
     CKLog("verification", "매치 조회 실패", { roomId: room.id, error: result.error });
     return { error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
@@ -102,7 +102,7 @@ async function CKVerifyRoom(room) {
   if (targetMatch) {
     // 검증 성공 → 정산
     CKLog("verification", "매치 발견, 정산 시작", { roomId: room.id, matchId: targetMatch.metadata?.matchid });
-    await CKDoSettlement(room, targetMatch);
+    CKDoSettlement(room, targetMatch);
     return { verified: true, matchId: targetMatch.metadata?.matchid };
   }
 
@@ -116,7 +116,7 @@ async function CKVerifyRoom(room) {
 }
 
 // 전체 자동 검증 크론 (2분마다)
-async function CKAutoVerifyAll() {
+function CKAutoVerifyAll() {
   const rooms = CKGetVerifiableRooms();
   if (rooms.length === 0) return { ok: true, verified: 0, mismatched: 0, skipped: 0 };
 
@@ -128,7 +128,7 @@ async function CKAutoVerifyAll() {
 
   for (const room of rooms) {
     try {
-      const result = await CKVerifyRoom(room);
+      const result = CKVerifyRoom(room);
       if (result.verified) verified++;
       else if (result.mismatched) mismatched++;
       else if (result.error) errors++;
@@ -142,14 +142,14 @@ async function CKAutoVerifyAll() {
 }
 
 // 수동 검증 트리거 (API에서 호출)
-async function CKManualVerify(roomId) {
+function CKManualVerify(roomId) {
   try {
     const room = $app.findRecordById("match_rooms", roomId);
     if (!room) return { ok: false, error: "Room not found" };
     if (room.getString("status") !== "playing") {
       return { ok: false, error: "Not in playing state" };
     }
-    const result = await CKVerifyRoom(room);
+    const result = CKVerifyRoom(room);
     return { ok: true, ...result };
   } catch (e) {
     return { ok: false, error: String(e) };
