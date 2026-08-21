@@ -197,7 +197,21 @@ function CKValGet(endpoint, params, options = {}) {
       return { error: "HenrikDev API " + res.statusCode, statusCode: res.statusCode };
     }
 
-    const data = JSON.parse(res.body);
+    // 빈/비정상 본문 방어 (goja JSON.parse("") 는 SyntaxError 던짐)
+    const bodyText = res.body == null ? "" : String(res.body);
+    if (bodyText.trim() === "") {
+      CKReleaseKey(keyId, true);
+      CKLog("api", "HenrikDev 빈 본문", { endpoint, statusCode: res.statusCode });
+      return { error: "HenrikDev 빈 응답 본문 (HTTP " + res.statusCode + ") - 잠시 후 재시도해 주세요" };
+    }
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch (parseErr) {
+      CKReleaseKey(keyId, true);
+      CKLog("api", "HenrikDev 파싱 실패", { endpoint, statusCode: res.statusCode, preview: bodyText.slice(0, 120) });
+      return { error: "HenrikDev 응답 파싱 실패 (HTTP " + res.statusCode + "): 본문 시작 [" + bodyText.slice(0, 80) + "]" };
+    }
     CKReleaseKey(keyId, true);
 
     // 캐시 저장
