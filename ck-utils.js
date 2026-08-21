@@ -99,7 +99,14 @@ function CKTierFromMMR(mmr) {
 // 설정에서 티어별 초기 ELO 조회
 function CKTierElo(settings, tierKey) {
   if (!settings) return null;
-  const map = settings.getJSON("ck_tier_elo");
+  // v0.39 Record 에 getJSON 이 없으므로 get() 으로 읽어 문자열이면 파싱
+  let map = null;
+  try {
+    const raw = settings.get("ck_tier_elo");
+    map = typeof raw === "string" ? CKSafeParse(raw, null) : raw;
+  } catch (e) {
+    map = null;
+  }
   if (!map || typeof map !== "object") return null;
   return map[tierKey] || null;
 }
