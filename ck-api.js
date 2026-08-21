@@ -156,6 +156,32 @@ function CKCacheSet(key, payload, ttlMs) {
 }
 
 // 공통 HTTP 요청 (키 자동 획득/릴리즈 + 캐시)
+
+// 바이트 배열 → UTF-8 문자열 (한글 등 멀티바이트 지원)
+function CKBytesToUtf8(bytes) {
+  let out = "";
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      out += String.fromCharCode(b);
+      i += 1;
+    } else if (b < 0xE0) {
+      out += String.fromCharCode(((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F));
+      i += 2;
+    } else if (b < 0xF0) {
+      out += String.fromCharCode(((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F));
+      i += 3;
+    } else {
+      const cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3F) << 12) | ((bytes[i + 2] & 0x3F) << 6) | (bytes[i + 3] & 0x3F);
+      i += 4;
+      const off = cp - 0x10000;
+      out += String.fromCharCode(0xD800 + (off >> 10), 0xDC00 + (off & 0x3FF));
+    }
+  }
+  return out;
+}
+
 function CKValGet(endpoint, params, options = {}) {
   const cacheKey = options.cacheKey || endpoint + JSON.stringify(params);
   const ttl = options.ttl || CK_CACHE_TTL.matches;
@@ -198,7 +224,23 @@ function CKValGet(endpoint, params, options = {}) {
     }
 
     // 빈/비정상 본문 방어 (goja JSON.parse("") 는 SyntaxError 던짐)
-    const bodyText = res.body == null ? "" : String(res.body);
+    // PB v0.39 $http.send 는 body 를 바이트 배열로 반환하므로 UTF-8 로 디코딩한다.
+    let bodyText = "";
+    if (res.json !== undefined && res.json !== null) {
+      // 일부 버전은 json 필드로 파싱된 본문 제공
+      CKReleaseKey(keyId, true);
+      const data0 = res.json;
+      if (data0 && !options.skipCache) {
+        CKCacheSet(cacheKey, data0, ttl);
+      }
+      return { ok: true, data: data0 };
+    } else if (typeof res.body === "string") {
+      bodyText = res.body;
+    } else if (res.body && typeof res.body.length === "number") {
+      bodyText = CKBytesToUtf8(res.body);
+    } else if (res.body != null) {
+      bodyText = String(res.body);
+    }
     if (bodyText.trim() === "") {
       CKReleaseKey(keyId, true);
       CKLog("api", "HenrikDev 빈 본문", { endpoint, statusCode: res.statusCode });
