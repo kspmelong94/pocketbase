@@ -234,8 +234,8 @@ async function CKAccount(riotId) {
       puuid: acc.puuid,
       name: acc.name,
       tag: acc.tag,
-      affinity: acc.region || "ap",
-      region: acc.region || "ap",
+      affinity: "ap",
+      region: "ap",
     };
   }
   return { ok: false, error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
@@ -247,7 +247,7 @@ async function CKMMR(puuid, affinity) {
   const cached = CKCacheGet(cacheKey);
   if (cached) return { ok: true, ...cached, cached: true };
 
-  const region = affinity || "ap";
+  const region = "ap"; // AP 서버 고정 (한국 계정은 kr 반환 시 조회 실패 가능)
   const result = await CKValGet("/valorant/v2/mmr/" + region + "/" + puuid, {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.mmr,
@@ -278,10 +278,9 @@ async function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
   const parsed = CKParseRiotId(riotId);
   if (!parsed) return { ok: false, error: "Invalid Riot ID" };
 
-  const cacheKey = "matches:" + puuid + ":custom";
-  // 주의: puuid가 없으면 캐시 키 다름 → 호출부에서 puuid 포함해서 호출 권장
+  const cacheKey = "matches:" + parsed.name.toLowerCase() + "#" + parsed.tag.toLowerCase() + ":custom";
 
-  const region = affinity || "ap";
+  const region = "ap"; // AP 서버 고정
   const url = "/v3/matches/" + region + "/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag) + "?filter=custom&size=20";
   
   const result = await CKValGet(url, {}, { skipCache: true }); // 검증용은 캐시 스킵 또는 짧은 TTL

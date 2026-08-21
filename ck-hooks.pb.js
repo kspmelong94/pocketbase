@@ -144,6 +144,8 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     /* 무시 */
   }
 
+  let savedOk = true;
+  let savedErr = "";
   if (ranking) {
     // 재등록: 정보 갱신하되 Elo 유지
     ranking.set("nickname", L.BZNicknameOf(me.id));
@@ -155,12 +157,18 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     try {
       $app.save(ranking);
     } catch (e) {
-      /* 무시 */
+      savedOk = false;
+      savedErr = String(e);
     }
     elo = Number(ranking.getInt("elo") || 0);
   } else {
     // 최초 등록
-    const rec = L.CKEnsureRanking(me.id, initialElo);
+    let rec;
+    try {
+      rec = L.CKEnsureRanking(me.id, initialElo);
+    } catch (e) {
+      return c.json(200, { ok: false, message: "랭킹 레코드 초기화 실패 (rankings 컬렉션/필드 확인 필요): " + String(e) });
+    }
     rec.set("nickname", L.BZNicknameOf(me.id));
     rec.set("riot_id", acc.name + "#" + acc.tag);
     rec.set("puuid", acc.puuid);
@@ -170,10 +178,16 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     try {
       $app.save(rec);
     } catch (e) {
-      /* 무시 */
+      savedOk = false;
+      savedErr = String(e);
     }
     elo = initialElo;
     isFirst = true;
+  }
+
+  if (!savedOk) {
+    L.BZLog("ck-lookup", "랭킹 저장 실패: " + savedErr, { userId: me.id });
+    return c.json(200, { ok: false, message: "Riot ID는 확인됐지만 랭킹 저장에 실패했습니다: " + savedErr });
   }
 
   L.BZLog("ck-lookup", "Riot ID 등록: " + me.id + " → " + acc.name + "#" + acc.tag +
