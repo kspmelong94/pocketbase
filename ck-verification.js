@@ -1,8 +1,8 @@
 // CK 자동 검증 엔진
 // 방장의 최근 커스텀 매치 폴링 → 10명 puuid 일치 확인 → 정산 트리거
 
-const { CKGetSettings, CKGetCurrentSeason, CKNow, CKLog, CKSafeParse, CKAllUserIds } = require(`${__hooks}/ck-utils.js`);
-const { CKRecentCustomMatchesByRiotId } = require(`${__hooks}/ck-api.js`);
+const { CKGetSettings, CKGetCurrentSeason, CKNow, CKLog, CKSafeParse, CKAllUserIds, CKTeamOf } = require(`${__hooks}/ck-utils.js`);
+const { CKRecentCustomMatchesByPuuid } = require(`${__hooks}/ck-api.js`);
 const { CKDoSettlement } = require(`${__hooks}/ck-settlement.js`);
 
 // playing 상태 방 조회 (30분 경과한 것)
@@ -69,8 +69,8 @@ function CKVerifyRoom(room) {
   const puuid = masterRanking.getString("puuid");
   const affinity = masterRanking.getString("affinity") || "ap";
 
-  // 최근 커스텀 매치 폴링
-  const result = CKRecentCustomMatchesByRiotId(riotId, affinity);
+  // 최근 커스텀 매치 폴링 (방장 puuid 기준, AP 고정)
+  const result = CKRecentCustomMatchesByPuuid(puuid, affinity);
   if (!result.ok) {
     CKLog("verification", "매치 조회 실패", { roomId: room.id, error: result.error });
     return { error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
@@ -86,24 +86,46 @@ function CKVerifyRoom(room) {
     return { error: "Not 10 players" };
   }
 
-  // playing_at 이후 생성된 커스텀 매치 중 10명 모두 포함된 것 찾기
+  // playing_at 이후 생성된 커스텀 매치 중 10명 모두 포함된 것 찾기 (v4 스키마)
   const targetMatch = matches.find((m) => {
     if (!m.metadata) return false;
-    const gameStart = m.metadata.game_start_patched || m.metadata.game_start;
-    if (!gameStart) return false;
-    if (new Date(gameStart).getTime() < new Date(playingAt).getTime()) return false;
-    if (m.queue !== "custom" && m.queue !== "Custom") return false;
-    if (m.is_completed !== true) return false;
+    const startedAt = m.metadata.started_at || m.metadata.game_start_in_iso || m.metadata.game_start_patched || m.metadata.game_start;
+    if (!startedAt) return false;
+    // 시작 선언 1분 전까지의 매치 허용(시차 보정), 이후 6시간까지
+    const started = new Date(startedAt).getTime();
+    if (started < new Date(playingAt).getTime() - 60000) return false;
+    if (new Date(playingAt).getTime() && started > new Date(playingAt).getTime() + 6 * 3600 * 1000) return false;
+    const queueId = String((m.metadata.queue && (m.metadata.queue.id || m.metadata.queue.name || "")) || "").toLowerCase();
+    if (queueId !== "custom") return false;
+    if (m.metadata.is_completed === false) return false;
 
-    const matchPuuids = m.players?.map((p) => p.puuid) || [];
+    const matchPlayers = m.players || [];
+    const matchPuuids = matchPlayers.map((p) => p.puuid) || [];
     return allPuuids.every((p) => matchPuuids.includes(p));
   });
 
   if (targetMatch) {
-    // 검증 성공 → 정산
-    CKLog("verification", "매치 발견, 정산 시작", { roomId: room.id, matchId: targetMatch.metadata?.matchid });
-    CKDoSettlement(room, targetMatch);
-    return { verified: true, matchId: targetMatch.metadata?.matchid };
+    // 검증 성공 → 방장 팀 기준으로 a/b 사이드 매핑 후 정산
+    const matchId = (targetMatch.metadata && targetMatch.metadata.match_id) || "";
+    CKLog("verification", "매치 발견, 정산 시작", { roomId: room.id, matchId: matchId });
+
+    const masterPlayer = (targetMatch.players || []).find((p) => p.puuid === puuid);
+    const masterTeamId = masterPlayer ? masterPlayer.team_id : null;
+    const myTeam = CKTeamOf(room, masterId) || "a";
+
+    // v4 teams: [{team_id:"Red"|"Blue", won, rounds:{won}}] → side("a"/"b") 부여해 전달
+    const mappedTeams = (targetMatch.teams || []).map((t) => ({
+      team_id: t.team_id,
+      won: t.won === true,
+      rounds_won: Number((t.rounds && t.rounds.won) || 0),
+      side: t.team_id === masterTeamId ? myTeam : myTeam === "a" ? "b" : "a",
+    }));
+
+    const settled = CKDoSettlement(room, {
+      teams: mappedTeams,
+      metadata: targetMatch.metadata,
+    });
+    return { verified: settled.ok !== false, matchId: matchId, settlement: settled };
   }
 
   // 재시도 카운트 증가

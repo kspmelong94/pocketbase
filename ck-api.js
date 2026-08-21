@@ -269,7 +269,7 @@ function CKValGet(endpoint, params, options = {}) {
   }
 }
 
-// 계정 조회 (/valorant/v1/account/{name}/{tag})
+// 계정 조회 (/valorant/v2/account/{name}/{tag})
 function CKAccount(riotId) {
   const parsed = CKParseRiotId(riotId);
   if (!parsed) return { noKeys: true, error: "Invalid Riot ID format" };
@@ -278,7 +278,7 @@ function CKAccount(riotId) {
   const cached = CKCacheGet(cacheKey);
   if (cached) return { ok: true, ...cached, cached: true };
 
-  const result = CKValGet("/valorant/v1/account/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag), {}, {
+  const result = CKValGet("/valorant/v2/account/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag), {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.account,
   });
@@ -294,72 +294,53 @@ function CKAccount(riotId) {
       region: "ap",
     };
   }
+  if (result.statusCode === 404) {
+    return { ok: false, statusCode: 404, error: "계정을 찾을 수 없습니다. Riot ID(이름#TAG)를 다시 확인해 주세요." };
+  }
   return { ok: false, error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
 }
 
-// MMR/티어 조회 (/valorant/v2/mmr/{region}/{puuid})
+// MMR/티어 조회 (/valorant/v2/by-puuid/mmr/{region}/{puuid})
 function CKMMR(puuid, affinity) {
-  const cacheKey = "mmr:" + puuid + ":" + affinity;
+  const aff = String(affinity || "ap").toLowerCase();
+  const cacheKey = "mmr:" + puuid;
   const cached = CKCacheGet(cacheKey);
-  if (cached) return { ok: true, ...cached, cached: true };
+  if (cached) return { ok: true, tier: cached.tier, tierName: cached.tierName };
 
-  const region = "ap"; // AP 서버 고정 (한국 계정은 kr 반환 시 조회 실패 가능)
-  const result = CKValGet("/valorant/v2/mmr/" + region + "/" + puuid, {}, {
+  const result = CKValGet("/valorant/v2/by-puuid/mmr/" + encodeURIComponent(aff) + "/" + encodeURIComponent(puuid), {}, {
     cacheKey,
     ttl: CK_CACHE_TTL.mmr,
   });
 
-  if (result.ok && result.data?.data) {
-    const mmr = result.data.data;
-    const tierNum = CKTierFromMMR(mmr.current?.elo || mmr.elo || 0);
-    return {
-      ok: true,
-      tier: tierNum,
-      tierName: CKTierKey(tierNum),
-      mmr: mmr.current?.elo || mmr.elo || 0,
-    };
+  if (result.noKeys) return { noKeys: true };
+  if (result.rateLimited) return { rateLimited: true };
+  // 조회 실패/데이터 없음 = 언랭 취급
+  if (!result.ok || !result.data?.data?.current_data) {
+    return { ok: true, tier: 0, tierName: "" };
   }
-  return { ok: false, error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
+  const cur = result.data.data.current_data || {};
+  const tier = Number(cur.currenttier || 0);
+  const tierName = String(cur.currenttierpatched || "");
+  CKCacheSet(cacheKey, { tier, tierName }, CK_CACHE_TTL.mmr);
+  return { ok: true, tier, tierName };
 }
 
-// 최근 커스텀 매치 조회 (/v3/matches/{region}/{name}/{tag}?filter=custom)
-function CKRecentCustomMatches(puuid, affinity, since) {
-  // puuid로 계정 정보 역조회 필요 (name#tag 필요) → 랭킹에서 riot_id 사용
-  // 여기서는 puuid만 받아서 name#tag를 별도 조회하거나, 랭킹에서 가져와야 함
-  // 편의상 호출부에서 riot_id 전달받아 사용
-  return { ok: false, error: "Use CKRecentCustomMatchesByRiotId instead" };
-}
-
-function CKRecentCustomMatchesByRiotId(riotId, affinity, since) {
-  const parsed = CKParseRiotId(riotId);
-  if (!parsed) return { ok: false, error: "Invalid Riot ID" };
-
-  const cacheKey = "matches:" + parsed.name.toLowerCase() + "#" + parsed.tag.toLowerCase() + ":custom";
-
-  const region = "ap"; // AP 서버 고정
-  const url = "/v3/matches/" + region + "/" + encodeURIComponent(parsed.name) + "/" + encodeURIComponent(parsed.tag) + "?filter=custom&size=20";
-  
-  const result = CKValGet(url, {}, { skipCache: true }); // 검증용은 캐시 스킵 또는 짧은 TTL
-  
-  if (result.ok && result.data?.data) {
-    return { ok: true, matches: result.data.data };
-  }
-  return { ok: false, error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
-}
-
-// 매치 상세 조회 (/v3/matches/{match_id})
-function CKMatchDetail(matchId) {
-  const cacheKey = "matchDetail:" + matchId;
+// 최근 커스텀 매치 조회 (/valorant/v4/by-puuid/matches/{region}/pc/{puuid}?mode=Custom)
+function CKRecentCustomMatchesByPuuid(puuid, affinity) {
+  const aff = String(affinity || "ap").toLowerCase();
+  const cacheKey = "matches:" + puuid + ":custom";
   const cached = CKCacheGet(cacheKey);
-  if (cached) return { ok: true, ...cached, cached: true };
+  if (cached && Array.isArray(cached)) return { ok: true, matches: cached };
 
-  const result = CKValGet("/v3/matches/" + matchId, {}, {
-    cacheKey,
-    ttl: CK_CACHE_TTL.matchDetail,
-  });
+  const url = "/valorant/v4/by-puuid/matches/" + encodeURIComponent(aff) + "/pc/" + encodeURIComponent(puuid) + "?mode=Custom&size=10";
+
+  const result = CKValGet(url, {}, { skipCache: true }); // 검증용은 캐시 스킵
 
   if (result.ok && result.data?.data) {
-    return { ok: true, match: result.data.data };
+    const list = result.data.data;
+    const matches = Array.isArray(list) ? list : [];
+    if (matches.length) CKCacheSet(cacheKey, matches, 60000);
+    return { ok: true, matches };
   }
   return { ok: false, error: result.error, noKeys: result.noKeys, rateLimited: result.rateLimited };
 }
@@ -376,6 +357,5 @@ module.exports = {
   CKValGet,
   CKAccount,
   CKMMR,
-  CKRecentCustomMatchesByRiotId,
-  CKMatchDetail,
+  CKRecentCustomMatchesByPuuid,
 };

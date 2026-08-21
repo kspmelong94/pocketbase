@@ -11,17 +11,18 @@ function CKDoSettlement(room, match) {
   const eloK = settings.getInt("ck_elo_k") || 25;
   const season = room.getString("season") || CKGetCurrentSeason();
 
-  // 승리 팀 판정
-  // HenrikDev match 구조: teams[0], teams[1] 중 won=true인 팀
+  // 승리 팀 판정 (verification 에서 side("a"/"b") 부여된 teams 전달)
+  // teams: [{team_id, won, rounds_won, side}]
+  const teamsArr = Array.isArray(match.teams) ? match.teams : [];
   let winner = "a";
-  if (match.teams && match.teams.length === 2) {
-    if (match.teams[1]?.won === true) winner = "b";
-    else if (match.teams[0]?.won === true) winner = "a";
-    else {
-      // won 필드 없으면 라운드 수 비교
-      const roundsA = match.teams[0]?.rounds_won || 0;
-      const roundsB = match.teams[1]?.rounds_won || 0;
-      winner = roundsA > roundsB ? "a" : "b";
+  if (teamsArr.length === 2) {
+    const wonTeam = teamsArr.find((t) => t.won === true);
+    if (wonTeam && wonTeam.side) {
+      winner = wonTeam.side;
+    } else {
+      const roundsA = Number(teamsArr.find((t) => t.side === "a")?.rounds_won || 0);
+      const roundsB = Number(teamsArr.find((t) => t.side === "b")?.rounds_won || 0);
+      winner = roundsA >= roundsB ? "a" : "b";
     }
   }
 
@@ -32,8 +33,8 @@ function CKDoSettlement(room, match) {
   const loserTeam = winner === "a" ? teamB : teamA;
 
   // 스코어 기록 (승자 13, 패자 라운드 수)
-  const winnerRounds = match.teams?.find((t) => t.won === true)?.rounds_won || 13;
-  const loserRounds = match.teams?.find((t) => t.won !== true)?.rounds_won || 0;
+  const winnerRounds = Number(teamsArr.find((t) => t.side === winner)?.rounds_won || 13);
+  const loserRounds = Number(teamsArr.find((t) => t.side !== winner)?.rounds_won || 0);
   const scoreA = winner === "a" ? winnerRounds : loserRounds;
   const scoreB = winner === "b" ? winnerRounds : loserRounds;
 
@@ -78,21 +79,23 @@ function CKDoSettlement(room, match) {
     }
   }
 
-  // 방 레코드 업데이트
+  // 방 레코드 업데이트 (v4 metadata: match_id, map:{name})
+  const mapRaw = match.metadata && match.metadata.map;
+  const mapName = typeof mapRaw === "string" ? mapRaw : mapRaw && (mapRaw.name || mapRaw.id) || "";
   room.set("status", "finished");
   room.set("winner", winner);
   room.set("score_a", scoreA);
   room.set("score_b", scoreB);
-  room.set("match_id", match.metadata?.matchid || "");
-  room.set("map", match.metadata?.map || "");
-  room.set("finished_at", match.metadata?.game_start_patched || CKNow());
+  room.set("match_id", (match.metadata && match.metadata.match_id) || "");
+  room.set("map", mapName);
+  room.set("finished_at", (match.metadata && (match.metadata.game_start_in_iso || match.metadata.started_at)) || CKNow());
   room.set("elo_deltas", deltas);
 
   $app.save(room);
 
   CKLog("settlement", "정산 완료", { roomId: room.id, winner, scoreA, scoreB, deltas });
 
-  return { ok: true, winner, scoreA, scoreB, deltas, matchId: match.metadata?.matchid };
+  return { ok: true, winner, scoreA, scoreB, deltas, matchId: (match.metadata && match.metadata.match_id) || "" };
 }
 
 // 시즌 소프트 리셋 (관리자용)
