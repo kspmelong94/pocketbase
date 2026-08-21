@@ -9,8 +9,6 @@ function CKCheckPenalty(userId) {
     const penalty = $app.findFirstRecordByFilter(
       "penalties",
       "user = {:u} && penalty_until > {:now} && (type = 'no_show' || type = 'manner')",
-      "penalty_until",
-      1,
       { u: userId, now: CKNow() }
     );
     if (penalty) {

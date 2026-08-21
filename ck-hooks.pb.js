@@ -275,21 +275,32 @@ const L = require(`${__hooks}/ck-lib-all.js`);
   const season = L.CKGetCurrentSeason();
 
   try {
-    const myQueue = $app.findFirstRecordByFilter(
-      "match_queue",
-      "user = {:u} && season = {:s} && status != 'cancelled'",
-      { u: me.id, s: season }
-    );
+    // 결과 없음은 예외로 던져지므로 null 로 정규화
+    let myQueue = null;
+    try {
+      myQueue = $app.findFirstRecordByFilter(
+        "match_queue",
+        "user = {:u} && season = {:s} && status != 'cancelled'",
+        { u: me.id, s: season }
+      );
+    } catch (e) {
+      myQueue = null;
+    }
 
-    const waitingRecords = $app.findRecordsByFilter(
-      "match_queue",
-      "status = 'waiting' && season = {:s}",
-      "-id",
-      500,
-      0,
-      { s: season }
-    );
-    const waitingCount = waitingRecords.length;
+    let waitingCount = 0;
+    try {
+      const waitingRecords = $app.findRecordsByFilter(
+        "match_queue",
+        "status = 'waiting' && season = {:s}",
+        "-id",
+        500,
+        0,
+        { s: season }
+      );
+      waitingCount = waitingRecords.length;
+    } catch (e) {
+      waitingCount = 0;
+    }
 
     return c.json(200, {
       ok: true,
@@ -469,9 +480,20 @@ const L = require(`${__hooks}/ck-lib-all.js`);
       params.t = tier;
     }
 
-    const result = $app.findRecordsByFilter("rankings", filter, sort, perPage, (page - 1) * perPage, params);
-    const allRows = $app.findRecordsByFilter("rankings", filter, "-id", 0, 0, params);
-    const total = allRows.length;
+    // 결과 없음은 예외로 던져지므로 빈 배열로 정규화
+    let result = [];
+    try {
+      result = $app.findRecordsByFilter("rankings", filter, sort, perPage, (page - 1) * perPage, params);
+    } catch (e) {
+      result = [];
+    }
+    let total = 0;
+    try {
+      const allRows = $app.findRecordsByFilter("rankings", filter, "-id", 0, 0, params);
+      total = allRows.length;
+    } catch (e) {
+      total = 0;
+    }
 
     const items = result.map((r, idx) => ({
       rank: (page - 1) * perPage + idx + 1,
@@ -517,15 +539,20 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     const ranking = L.CKRankingOf(me.id, season);
     if (!ranking) return c.json(404, { message: "랭킹 정보가 없습니다." });
 
-    // 최근 매치 조회 (match_rooms에서)
-    const myRooms = $app.findRecordsByFilter(
-      "match_rooms",
-      "(team_a.user ~ {:u} || team_b.user ~ {:u}) && season = {:s} && status = 'finished'",
-      "-finished_at",
-      20,
-      0,
-      { u: me.id, s: season }
-    );
+    // 최근 매치 조회 (match_rooms에서) — 결과 없음은 빈 배열로 정규화
+    let myRooms = [];
+    try {
+      myRooms = $app.findRecordsByFilter(
+        "match_rooms",
+        "(team_a.user ~ {:u} || team_b.user ~ {:u}) && season = {:s} && status = 'finished'",
+        "-finished_at",
+        20,
+        0,
+        { u: me.id, s: season }
+      );
+    } catch (e) {
+      myRooms = [];
+    }
 
     const recentMatches = myRooms.map((r) => {
       const teamA = L.CKSafeParse(r.getString("team_a"), []);
