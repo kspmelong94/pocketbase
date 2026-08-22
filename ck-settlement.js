@@ -3,8 +3,8 @@
 
 const { CKGetSettings, CKGetCurrentSeason, CKNow, CKLog, CKSafeParse, CKEloSum, CKRankingOf, CKEnsureRanking, CKSoftResetElo } = require(`${__hooks}/ck-utils.js`);
 
-// 정산 실행
-function CKDoSettlement(room, match) {
+// 정산 실행 (playerStats: 검증 시 수집된 10인 개인 스탯 — 관리자 강제판정 시 null)
+function CKDoSettlement(room, match, playerStats) {
   const settings = CKGetSettings();
   if (!settings) return { ok: false, error: "Settings not found" };
 
@@ -90,6 +90,9 @@ function CKDoSettlement(room, match) {
   room.set("map", mapName);
   room.set("finished_at", (match.metadata && (match.metadata.game_start_in_iso || match.metadata.started_at)) || CKNow());
   room.set("elo_deltas", deltas);
+  if (playerStats && typeof playerStats === "object" && Object.keys(playerStats).length > 0) {
+    room.set("player_stats", playerStats);
+  }
 
   $app.save(room);
 

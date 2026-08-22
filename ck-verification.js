@@ -113,18 +113,62 @@ function CKVerifyRoom(room) {
     const masterTeamId = masterPlayer ? masterPlayer.team_id : null;
     const myTeam = CKTeamOf(room, masterId) || "a";
 
+    function sideOf(teamId) {
+      return teamId === masterTeamId ? myTeam : myTeam === "a" ? "b" : "a";
+    }
+
     // v4 teams: [{team_id:"Red"|"Blue", won, rounds:{won}}] → side("a"/"b") 부여해 전달
     const mappedTeams = (targetMatch.teams || []).map((t) => ({
       team_id: t.team_id,
       won: t.won === true,
       rounds_won: Number((t.rounds && t.rounds.won) || 0),
-      side: t.team_id === masterTeamId ? myTeam : myTeam === "a" ? "b" : "a",
+      side: sideOf(t.team_id),
     }));
+
+    // 10인 개인 스탯 스냅샷: puuid → userId 매핑 (rankings 의 puuid 사용)
+    const userIdByPuuid = {};
+    for (const uid of allPuuids) {
+      try {
+        const rk = $app.findFirstRecordByFilter("rankings", "user = {:u} && season = {:s}", {
+          u: uid,
+          s: room.getString("season") || CKGetCurrentSeason(),
+        });
+        if (rk && rk.getString("puuid")) userIdByPuuid[rk.getString("puuid")] = uid;
+      } catch (e) {
+        /* 무시 */
+      }
+    }
+
+    const playerStats = {};
+    for (const p of targetMatch.players || []) {
+      const uid = userIdByPuuid[p.puuid];
+      if (!uid) continue;
+      const st = p.stats || {};
+      const dmg = st.damage || p.damage || {};
+      const agentRaw = (p.agent && (p.agent.name || p.agent.id)) || p.character || "";
+      playerStats[uid] = {
+        name: String(p.name || ""),
+        tag: String(p.tag || ""),
+        agent: String(agentRaw),
+        side: sideOf(p.team_id),
+        kills: Number(st.kills || 0),
+        deaths: Number(st.deaths || 0),
+        assists: Number(st.assists || 0),
+        score: Number(st.score || 0),
+        headshots: Number(st.headshots || 0),
+        bodyshots: Number(st.bodyshots || 0),
+        legshots: Number(st.legshots || 0),
+        dmg_made: Number(dmg.made || 0),
+        dmg_received: Number(dmg.received || 0),
+      };
+    }
+    const statsCount = Object.keys(playerStats).length;
+    if (statsCount > 0) CKLog("verification", "개인 스탯 수집", { roomId: room.id, players: statsCount });
 
     const settled = CKDoSettlement(room, {
       teams: mappedTeams,
       metadata: targetMatch.metadata,
-    });
+    }, statsCount > 0 ? playerStats : null);
     return { verified: settled.ok !== false, matchId: matchId, settlement: settled };
   }
 

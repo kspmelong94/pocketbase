@@ -386,6 +386,129 @@ const L = require(`${__hooks}/ck-lib-all.js`);
   });
 });
 
+// 내 상세 통계 집계 (finished 방 + player_stats 스냅샷)
+routerAdd("GET", "/api/ck/stats/me", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const query = L.CKParseQuery(c.request.url);
+  const season = query["season"] || L.CKGetCurrentSeason();
+
+  let rooms = [];
+  try {
+    // 주의: json 배열 필드(team_a.user 등)의 dot-notation 필터는 v0.39 에서 동작하지 않음
+    // → status+season 으로 조회 후 JS 사이드에서 멤버십 검사
+    const allRooms = $app.findRecordsByFilter(
+      "match_rooms",
+      "season = {:s} && status = 'finished'",
+      "-finished_at",
+      100,
+      0,
+      { s: season }
+    );
+    rooms = allRooms.filter((r) => {
+      const teamA = L.CKSafeParse(r.getString("team_a"), []);
+      const teamB = L.CKSafeParse(r.getString("team_b"), []);
+      return (
+        (Array.isArray(teamA) && teamA.some((p) => p.user === me.id)) ||
+        (Array.isArray(teamB) && teamB.some((p) => p.user === me.id))
+      );
+    });
+  } catch (e) {
+    rooms = [];
+  }
+
+  const totals = { matches: 0, wins: 0, losses: 0, draws: 0, kills: 0, deaths: 0, assists: 0, hs_hits: 0, hs_shots: 0, score: 0 };
+  const maps = {};
+  const agents = {};
+  const form = [];
+
+  for (const r of rooms) {
+    const teamA = L.CKSafeParse(r.getString("team_a"), []);
+    const teamB = L.CKSafeParse(r.getString("team_b"), []);
+    const mySide = teamA.some((p) => p.user === me.id) ? "a" : teamB.some((p) => p.user === me.id) ? "b" : null;
+    if (!mySide) continue;
+
+    const winner = r.getString("winner");
+    const result = winner === mySide ? "w" : winner ? "l" : "d";
+    totals.matches++;
+    if (result === "w") totals.wins++;
+    else if (result === "l") totals.losses++;
+    else totals.draws++;
+
+    const mapName = r.getString("map") || "기타";
+    if (!maps[mapName]) maps[mapName] = { w: 0, l: 0 };
+    if (result === "w") maps[mapName].w++;
+    else if (result === "l") maps[mapName].l++;
+
+    let ps = null;
+    const allStats = L.CKSafeParse(r.getString("player_stats"), {});
+    if (allStats && typeof allStats === "object") ps = allStats[me.id] || null;
+
+    const deltaMap = L.CKSafeParse(r.getString("elo_deltas"), {});
+    const entry = {
+      room_id: r.id,
+      date: r.getString("finished_at") || "",
+      map: mapName,
+      result: result,
+      score: r.getInt("score_a") + "-" + r.getInt("score_b"),
+      elo_delta: Number(deltaMap[me.id] || 0),
+    };
+
+    if (ps && typeof ps === "object") {
+      const shots = Number(ps.headshots || 0) + Number(ps.bodyshots || 0) + Number(ps.legshots || 0);
+      entry.kills = Number(ps.kills || 0);
+      entry.deaths = Number(ps.deaths || 0);
+      entry.assists = Number(ps.assists || 0);
+      entry.hs_pct = shots > 0 ? Math.round((Number(ps.headshots || 0) / shots) * 100) : null;
+      entry.acs = Math.round(Number(ps.score || 0) / 13); // 라운드 수 미보유 → 13라운드 근사
+      totals.kills += entry.kills;
+      totals.deaths += entry.deaths;
+      totals.assists += entry.assists;
+      totals.hs_hits += Number(ps.headshots || 0);
+      totals.hs_shots += shots;
+      totals.score += Number(ps.score || 0);
+
+      const ag = String(ps.agent || "기타");
+      if (!agents[ag]) agents[ag] = { picks: 0, w: 0, l: 0, k: 0, d: 0 };
+      agents[ag].picks++;
+      if (result === "w") agents[ag].w++;
+      else if (result === "l") agents[ag].l++;
+      agents[ag].k += entry.kills;
+      agents[ag].d += entry.deaths;
+    } else {
+      entry.kills = null;
+      entry.deaths = null;
+      entry.assists = null;
+      entry.hs_pct = null;
+      entry.acs = null;
+    }
+    form.push(entry);
+  }
+
+  const mapList = Object.keys(maps)
+    .map((name) => ({ name: name, w: maps[name].w, l: maps[name].l }))
+    .sort((a, b) => b.w + b.l - (a.w + a.l));
+  const agentList = Object.keys(agents)
+    .map((name) => ({ agent: name, picks: agents[name].picks, w: agents[name].w, l: agents[name].l, k: agents[name].k, d: agents[name].d }))
+    .sort((a, b) => b.picks - a.picks);
+
+  return c.json(200, {
+    ok: true,
+    totals: totals,
+    maps: mapList,
+    agents: agentList,
+    form: form.slice(0, 30),
+    has_player_stats: form.some((f) => f.kills != null),
+  });
+} catch (err) {
+  console.log("[ck] stats/me 예외: " + String(err));
+  return c.json(500, { ok: false, message: "stats 오류: " + String(err) });
+}
+});
+
 // 방 코드 등록/수정 (방장만)
 routerAdd("POST", "/api/ck/rooms/{id}/code", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);
@@ -559,17 +682,25 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     const ranking = L.CKRankingOf(me.id, season);
     if (!ranking) return c.json(404, { message: "랭킹 정보가 없습니다." });
 
-    // 최근 매치 조회 (match_rooms에서) — 결과 없음은 빈 배열로 정규화
+    // 최근 매치 조회 — json 배열 필드 dot-notation 필터 미지원 → JS 사이드 멤버십 검사
     let myRooms = [];
     try {
-      myRooms = $app.findRecordsByFilter(
+      const allFinished = $app.findRecordsByFilter(
         "match_rooms",
-        "(team_a.user ~ {:u} || team_b.user ~ {:u}) && season = {:s} && status = 'finished'",
+        "season = {:s} && status = 'finished'",
         "-finished_at",
-        20,
+        50,
         0,
-        { u: me.id, s: season }
+        { s: season }
       );
+      myRooms = allFinished.filter((r) => {
+        const a = L.CKSafeParse(r.getString("team_a"), []);
+        const b = L.CKSafeParse(r.getString("team_b"), []);
+        return (
+          (Array.isArray(a) && a.some((p) => p.user === me.id)) ||
+          (Array.isArray(b) && b.some((p) => p.user === me.id))
+        );
+      });
     } catch (e) {
       myRooms = [];
     }
