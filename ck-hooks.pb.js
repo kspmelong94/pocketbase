@@ -811,38 +811,3 @@ const L = require(`${__hooks}/ck-lib-all.js`);
     return c.json(200, { ok: false, message: "HenrikDev API 연결 실패" });
   }
 });
-
-// ---------- 진단 (배포 확인용 — 안정화 후 제거 예정) ----------
-routerAdd("GET", "/api/ck/_diag", (c) => {
-const L = require(`${__hooks}/ck-lib-all.js`);
-  const exists = {};
-  const rows = {};
-  for (const name of ["rankings", "match_queue", "match_rooms", "penalties", "manner_scores", "valorant_keys", "valorant_cache", "game_settings"]) {
-    try {
-      $app.findCollectionByNameOrId(name);
-      exists[name] = true;
-    } catch (e) {
-      exists[name] = false;
-    }
-  }
-  try { const r = $app.findRecordsByFilter("rankings", "id != ''", "-id", 0, 0); rows.rankings = r.length; } catch (e) { rows.rankings = "err"; }
-  try { const r = $app.findRecordsByFilter("match_queue", "status = 'waiting'", "-id", 0, 0); rows.queue_waiting = r.length; } catch (e) { rows.queue_waiting = "err"; }
-  let gsCkFields = "unknown";
-  try {
-    const col = $app.findCollectionByNameOrId("game_settings");
-    gsCkFields = col.fields.filter((f) => String(f.name).indexOf("ck_") === 0).length;
-  } catch (e) {}
-  let keys = "err";
-  try { const k = $app.findRecordsByFilter("valorant_keys", "id != ''", "-id", 100, 0); keys = k.length; } catch (e) {}
-
-  return c.json(200, {
-    ok: true,
-    hookVersion: "v3-5451757+diag",
-    season: L.CKGetCurrentSeason(),
-    collections: exists,
-    rankingRows: rows.rankings,
-    queueWaiting: rows.queue_waiting,
-    gameSettingsCkFields: gsCkFields,
-    valorantKeys: keys,
-  });
-});
