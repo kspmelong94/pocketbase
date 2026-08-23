@@ -509,6 +509,61 @@ try {
 }
 });
 
+// 고아 테이블 정리 (운영자 전용): PB 컬렉션 레코드가 없는데 SQLite 테이블만 남아있는 경우 드롭
+// (예: 컬렉션 생성 실패 롤백 후 DDL 잔존 → 재생성 시 인덱스 충돌)
+routerAdd("POST", "/api/ck/admin/drop-orphan-table", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+  if (me.getString("role") !== "operator") return c.json(403, { ok: false, message: "운영자 전용입니다." });
+
+  const body = L.BZBody(c);
+  const table = String(body.table || "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) {
+    return c.json(400, { ok: false, message: "테이블명 형식이 올바르지 않습니다." });
+  }
+  if (table.startsWith("_")) {
+    return c.json(400, { ok: false, message: "시스템 테이블은 삭제할 수 없습니다." });
+  }
+
+  // PB 컬렉션이 존재하면 절대 삭제 금지 (실 데이터 보호)
+  let collectionExists = true;
+  try {
+    $app.findCollectionByNameOrId(table);
+  } catch (e) {
+    collectionExists = false;
+  }
+  if (collectionExists) {
+    return c.json(400, { ok: false, message: "해당 이름의 컬렉션이 존재합니다. 삭제할 수 없습니다." });
+  }
+
+  // 실제 테이블이 있는지 확인
+  let tableExists = false;
+  try {
+    const rows = $app.findRecordsByFilter ? [] : [];
+    void rows;
+  } catch (e) {}
+
+  $app.db()
+    .newQuery("SELECT name FROM sqlite_master WHERE type='table' AND name={:t}")
+    .bind({ t: table })
+    .one();
+
+  $app.db()
+    .newQuery("DROP TABLE IF EXISTS [[" + table + "]]")
+    .execute();
+
+  return c.json(200, { ok: true, dropped: table });
+} catch (err) {
+  const msg = String(err);
+  if (msg.indexOf("no rows") >= 0) {
+    return c.json(200, { ok: true, dropped: "(table not found)" });
+  }
+  return c.json(500, { ok: false, message: "drop-orphan-table 오류: " + msg });
+}
+});
+
 // ---------- 파티 ----------
 // 내 파티/초대 조회
 routerAdd("GET", "/api/ck/party/my", (c) => {
