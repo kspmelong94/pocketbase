@@ -650,7 +650,7 @@ try {
   rec.set("party_code", code);
   rec.set("status", "open");
   rec.set("season", L.CKGetCurrentSeason());
-  rec.set("members", [{ user: me.id, state: "leader" }]);
+  rec.set("members", JSON.stringify([{ user: me.id, state: "leader" }]));
   $app.save(rec);
 
   return c.json(200, { ok: true, party: L.PBuildPartyView(rec) });
@@ -685,7 +685,7 @@ try {
   }
 
   members.push({ user: targetId, state: "invited" });
-  mine.record.set("members", members);
+  mine.record.set("members", JSON.stringify(members));
   $app.save(mine.record);
 
   return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
@@ -717,7 +717,7 @@ try {
   if (L.PJoinedMembers(members).length >= L.PARTY_MAX) return c.json(400, { ok: false, message: "파티 정원이 가득 찼습니다." });
 
   entry.state = "joined";
-  party.set("members", members);
+  party.set("members", JSON.stringify(members));
   $app.save(party);
 
   return c.json(200, { ok: true, party: L.PBuildPartyView(party) });
@@ -743,7 +743,7 @@ try {
   if (idx < 0) return c.json(404, { ok: false, message: "유효한 초대가 없습니다." });
 
   members.splice(idx, 1);
-  party.set("members", members);
+  party.set("members", JSON.stringify(members));
   $app.save(party);
 
   return c.json(200, { ok: true });
@@ -770,7 +770,7 @@ try {
 
   if (remainingActive.length === 0) {
     mine.record.set("status", "disbanded");
-    mine.record.set("members", members);
+    mine.record.set("members", JSON.stringify(members));
     $app.save(mine.record);
     return c.json(200, { ok: true, disbanded: true });
   }
@@ -780,7 +780,7 @@ try {
     for (const m of members) if (m.user === remainingActive[0].user) m.state = "leader";
     mine.record.set("leader", remainingActive[0].user);
   }
-  mine.record.set("members", members);
+  mine.record.set("members", JSON.stringify(members));
   $app.save(mine.record);
 
   return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
@@ -814,7 +814,7 @@ try {
     return c.json(400, { ok: false, message: "리더는 추방할 수 없습니다." });
   }
 
-  mine.record.set("members", members);
+  mine.record.set("members", JSON.stringify(members));
   $app.save(mine.record);
 
   return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
