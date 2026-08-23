@@ -592,7 +592,7 @@ try {
   const col = $app.findCollectionByNameOrId("parties");
   const rec = new Record(col);
   rec.set("leader", me.id);
-  rec.set("code", code);
+  rec.set("party_code", code);
   rec.set("status", "open");
   rec.set("season", L.CKGetCurrentSeason());
   rec.set("members", [{ user: me.id, state: "leader" }]);

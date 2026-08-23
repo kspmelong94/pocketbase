@@ -81,7 +81,7 @@ function buildPartyView(record) {
   });
   return {
     id: record.id,
-    code: record.getString("code"),
+    code: record.getString("party_code"), // 응답 키는 code 유지 (프론트 호환)
     leader: record.getString("leader"),
     status: record.getString("status"),
     season: record.getString("season"),
