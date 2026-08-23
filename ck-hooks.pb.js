@@ -509,6 +509,43 @@ try {
 }
 });
 
+// 임시 테이블 진단 (운영자 전용) — 스키마/원시 행 확인 후 제거 예정
+routerAdd("GET", "/api/ck/admin/debug-table", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+  if (me.getString("role") !== "operator") return c.json(403, { ok: false, message: "운영자 전용입니다." });
+
+  const query = L.CKParseQuery(c.request.url);
+  const table = String(query["table"] || "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || table.startsWith("_")) {
+    return c.json(400, { ok: false, message: "테이블명 형식 오류" });
+  }
+
+  let columns = [];
+  try {
+    columns = $app.db().newQuery("PRAGMA table_info([[" + table + "]])").all();
+  } catch (e) {
+    return c.json(200, { ok: true, exists: false, error: String(e) });
+  }
+  if (!columns || columns.length === 0) {
+    return c.json(200, { ok: true, exists: false });
+  }
+
+  let rows = [];
+  try {
+    rows = $app.db().newQuery("SELECT * FROM [[" + table + "]] LIMIT 5").all();
+  } catch (e) {
+    rows = [{ readError: String(e) }];
+  }
+
+  return c.json(200, { ok: true, exists: true, columns: columns.map((cc) => cc.name), rows: rows });
+} catch (err) {
+  return c.json(500, { ok: false, message: String(err) });
+}
+});
+
 // 고아 테이블 정리 (운영자 전용): PB 컬렉션 레코드가 없는데 SQLite 테이블만 남아있는 경우 드롭
 // (예: 컬렉션 생성 실패 롤백 후 DDL 잔존 → 재생성 시 인덱스 충돌)
 routerAdd("POST", "/api/ck/admin/drop-orphan-table", (c) => {
