@@ -509,6 +509,383 @@ try {
 }
 });
 
+// ---------- 파티 ----------
+// 내 파티/초대 조회
+routerAdd("GET", "/api/ck/party/my", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+  const mine = L.PFindUserParty(me.id);
+  const invites = L.PFindPendingInvites(me.id).map((r) => L.PBuildPartyView(r));
+  return c.json(200, { ok: true, party: mine ? L.PBuildPartyView(mine.record) : null, invites: invites });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/my 오류: " + String(err) });
+}
+});
+
+// 초대 대상 검색 (rankings riot_id 접두사)
+routerAdd("GET", "/api/ck/party/search", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+  const query = L.CKParseQuery(c.request.url);
+  const qRaw = String(query["q"] || "").trim();
+  if (qRaw.length < 2) return c.json(200, { ok: true, results: [] });
+
+  let rows = [];
+  try {
+    rows = $app.findRecordsByFilter("rankings", "riot_id ~ {:qq} && puuid != ''", "-elo", 8, 0, { qq: qRaw });
+  } catch (e) {
+    rows = [];
+  }
+
+  const results = [];
+  for (const r of rows) {
+    const uid = r.getString("user");
+    if (uid === me.id) continue;
+    const targetParty = L.PFindUserParty(uid);
+    results.push({
+      user: uid,
+      riot_id: r.getString("riot_id"),
+      nickname: r.getString("nickname"),
+      elo: Number(r.getInt("elo") || 0),
+      in_party: !!targetParty,
+    });
+  }
+  return c.json(200, { ok: true, results: results });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/search 오류: " + String(err) });
+}
+});
+
+// 파티 생성
+routerAdd("POST", "/api/ck/party/create", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  // Riot ID 등록자만 파티 사용 가능
+  try {
+    const rk = $app.findFirstRecordByFilter("rankings", "user = {:u}", { u: me.id });
+    if (!rk) throw new Error("no-ranking");
+  } catch (e) {
+    return c.json(400, { ok: false, message: "먼저 Riot ID를 등록해 주세요." });
+  }
+
+  if (L.PFindUserParty(me.id)) {
+    return c.json(400, { ok: false, message: "이미 참여 중인 파티가 있습니다." });
+  }
+
+  let code = L.PGenCode();
+  for (let i = 0; i < 8; i++) {
+    try {
+      $app.findFirstRecordByFilter("parties", "code = {:c}", { c: code });
+      code = L.PGenCode(); // 존재 → 재생성
+    } catch (e) {
+      break; // 없음 → 확정
+    }
+  }
+
+  const col = $app.findCollectionByNameOrId("parties");
+  const rec = new Record(col);
+  rec.set("leader", me.id);
+  rec.set("code", code);
+  rec.set("status", "open");
+  rec.set("season", L.CKGetCurrentSeason());
+  rec.set("members", [{ user: me.id, state: "leader" }]);
+  $app.save(rec);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(rec) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/create 오류: " + String(err) });
+}
+});
+
+// 초대 (리더만)
+routerAdd("POST", "/api/ck/party/invite", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine || mine.entry.state !== "leader") {
+    return c.json(403, { ok: false, message: "파티 리더만 초대할 수 있습니다." });
+  }
+
+  const body = L.BZBody(c);
+  const targetId = String(body.userId || "");
+  if (!targetId || targetId === me.id) return c.json(400, { ok: false, message: "초대 대상이 올바르지 않습니다." });
+
+  const members = mine.members;
+  if (members.length >= L.PARTY_MAX) return c.json(400, { ok: false, message: "파티 정원(5명)이 가득 찼습니다." });
+  if (members.some((m) => m.user === targetId)) {
+    return c.json(400, { ok: false, message: "이미 파티에 속해 있거나 초대된 플레이어입니다." });
+  }
+  if (L.PFindUserParty(targetId)) {
+    return c.json(400, { ok: false, message: "상대가 다른 파티에 소속되어 있습니다." });
+  }
+
+  members.push({ user: targetId, state: "invited" });
+  mine.record.set("members", members);
+  $app.save(mine.record);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/invite 오류: " + String(err) });
+}
+});
+
+// 초대 수락
+routerAdd("POST", "/api/ck/party/accept", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = L.BZBody(c);
+  const partyId = String(body.partyId || "");
+  if (!partyId) return c.json(400, { ok: false, message: "partyId 가 필요합니다." });
+
+  if (L.PFindUserParty(me.id)) {
+    return c.json(400, { ok: false, message: "이미 참여 중인 파티가 있습니다. 먼저 탈퇴해 주세요." });
+  }
+
+  const party = $app.findRecordById("parties", partyId);
+  const members = L.PParseMembers(party.getString("members"));
+  const entry = members.find((m) => m.user === me.id && m.state === "invited");
+  if (!entry) return c.json(404, { ok: false, message: "유효한 초대가 없습니다." });
+  if (party.getString("status") !== "open") return c.json(400, { ok: false, message: "파티가 매칭 중이거나 종료되어 참여할 수 없습니다." });
+  if (L.PJoinedMembers(members).length >= L.PARTY_MAX) return c.json(400, { ok: false, message: "파티 정원이 가득 찼습니다." });
+
+  entry.state = "joined";
+  party.set("members", members);
+  $app.save(party);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(party) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/accept 오류: " + String(err) });
+}
+});
+
+// 초대 거절
+routerAdd("POST", "/api/ck/party/decline", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const body = L.BZBody(c);
+  const partyId = String(body.partyId || "");
+  if (!partyId) return c.json(400, { ok: false, message: "partyId 가 필요합니다." });
+
+  const party = $app.findRecordById("parties", partyId);
+  const members = L.PParseMembers(party.getString("members"));
+  const idx = members.findIndex((m) => m.user === me.id && m.state === "invited");
+  if (idx < 0) return c.json(404, { ok: false, message: "유효한 초대가 없습니다." });
+
+  members.splice(idx, 1);
+  party.set("members", members);
+  $app.save(party);
+
+  return c.json(200, { ok: true });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/decline 오류: " + String(err) });
+}
+});
+
+// 탈퇴 (리더 탈퇴 시 최장 합류자에게 위임, 인원 0이면 해체)
+routerAdd("POST", "/api/ck/party/leave", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine) return c.json(404, { ok: false, message: "참여 중인 파티가 없습니다." });
+  if (mine.record.getString("status") === "queued") {
+    return c.json(400, { ok: false, message: "매칭 중에는 탈퇴할 수 없습니다. 먼저 매칭을 취소해 주세요." });
+  }
+
+  let members = mine.members.filter((m) => m.user !== me.id);
+  const remainingActive = members.filter((m) => m.state === "leader" || m.state === "joined");
+
+  if (remainingActive.length === 0) {
+    mine.record.set("status", "disbanded");
+    mine.record.set("members", members);
+    $app.save(mine.record);
+    return c.json(200, { ok: true, disbanded: true });
+  }
+
+  if (mine.entry.state === "leader") {
+    remainingActive[0].state = "leader";
+    for (const m of members) if (m.user === remainingActive[0].user) m.state = "leader";
+    mine.record.set("leader", remainingActive[0].user);
+  }
+  mine.record.set("members", members);
+  $app.save(mine.record);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/leave 오류: " + String(err) });
+}
+});
+
+// 추방 (리더만)
+routerAdd("POST", "/api/ck/party/kick", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine || mine.entry.state !== "leader") {
+    return c.json(403, { ok: false, message: "파티 리더만 추방할 수 있습니다." });
+  }
+  if (mine.record.getString("status") === "queued") {
+    return c.json(400, { ok: false, message: "매칭 중에는 추방할 수 없습니다." });
+  }
+
+  const body = L.BZBody(c);
+  const targetId = String(body.userId || "");
+  const members = mine.members.filter((m) => m.user !== targetId);
+  if (members.length === mine.members.length) {
+    return c.json(404, { ok: false, message: "파티에 해당 멤버가 없습니다." });
+  }
+  if (targetId === mine.record.getString("leader")) {
+    return c.json(400, { ok: false, message: "리더는 추방할 수 없습니다." });
+  }
+
+  mine.record.set("members", members);
+  $app.save(mine.record);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/kick 오류: " + String(err) });
+}
+});
+
+// 해체 (리더만)
+routerAdd("POST", "/api/ck/party/disband", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine || mine.entry.state !== "leader") {
+    return c.json(403, { ok: false, message: "파티 리더만 해체할 수 있습니다." });
+  }
+
+  mine.record.set("status", "disbanded");
+  $app.save(mine.record);
+
+  return c.json(200, { ok: true, disbanded: true });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/disband 오류: " + String(err) });
+}
+});
+
+// 파티 매칭 시작 (리더만) — 전원 일괄 큐 등록
+routerAdd("POST", "/api/ck/party/queue-enter", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine || mine.entry.state !== "leader") {
+    return c.json(403, { ok: false, message: "파티 리더만 매칭을 시작할 수 있습니다." });
+  }
+  if (mine.record.getString("status") === "queued") {
+    return c.json(400, { ok: false, message: "이미 매칭 대기 중입니다." });
+  }
+
+  const active = L.PJoinedMembers(mine.members);
+  if (active.length < 2) return c.json(400, { ok: false, message: "파티 인원이 부족합니다. (최소 2명)" });
+
+  const season = L.CKGetCurrentSeason();
+
+  // 사전 검증: 페널티·Riot 등록
+  for (const m of active) {
+    const penalty = L.CKCheckPenalty(m.user);
+    if (penalty.blocked) {
+      return c.json(400, { ok: false, message: "파티원의 페널티로 매칭할 수 없습니다: " + penalty.message });
+    }
+    try {
+      const rk = $app.findFirstRecordByFilter("rankings", "user = {:u} && season = {:s}", { u: m.user, s: season });
+      if (!rk || !rk.getString("puuid")) {
+        const who = m.nickname || m.user;
+        return c.json(400, { ok: false, message: who + " 님이 Riot ID를 등록하지 않았습니다." });
+      }
+    } catch (e) {
+      return c.json(400, { ok: false, message: "랭킹 조회 실패로 매칭을 시작할 수 없습니다." });
+    }
+  }
+
+  // 기존 개인 큐 정리 후 파티 큐 등록
+  const col = $app.findCollectionByNameOrId("match_queue");
+  for (const m of active) {
+    L.PCancelUserQueue(season, m.user);
+
+    let elo = 1000;
+    try {
+      const rk = $app.findFirstRecordByFilter("rankings", "user = {:u} && season = {:s}", { u: m.user, s: season });
+      elo = Number(rk.getInt("elo") || 1000);
+    } catch (e) {}
+
+    const rec = new Record(col);
+    rec.set("user", m.user);
+    rec.set("elo", elo);
+    rec.set("status", "waiting");
+    rec.set("season", season);
+    rec.set("queued_at", L.CKNow());
+    rec.set("party_id", mine.record.id);
+    $app.save(rec);
+  }
+
+  mine.record.set("status", "queued");
+  $app.save(mine.record);
+
+  // 즉시 매칭 시도
+  L.CKRunMatchmaking();
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record), queued: active.length });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/queue-enter 오류: " + String(err) });
+}
+});
+
+// 파티 매칭 취소 (합류 멤버 누구나)
+routerAdd("POST", "/api/ck/party/queue-cancel", (c) => {
+const L = require(`${__hooks}/ck-lib-all.js`);
+try {
+  const me = L.BZAuth(c);
+  if (!me) return c.json(401, { message: "인증이 필요합니다." });
+
+  const mine = L.PFindUserParty(me.id);
+  if (!mine) return c.json(404, { ok: false, message: "참여 중인 파티가 없습니다." });
+  if (mine.record.getString("status") !== "queued") {
+    return c.json(400, { ok: false, message: "매칭 대기 중인 파티가 아닙니다." });
+  }
+
+  const season = L.CKGetCurrentSeason();
+  for (const m of L.PJoinedMembers(mine.members)) {
+    L.PCancelUserQueue(season, m.user);
+  }
+
+  mine.record.set("status", "open");
+  $app.save(mine.record);
+
+  return c.json(200, { ok: true, party: L.PBuildPartyView(mine.record) });
+} catch (err) {
+  return c.json(500, { ok: false, message: "party/queue-cancel 오류: " + String(err) });
+}
+});
+
 // 방 코드 등록/수정 (방장만)
 routerAdd("POST", "/api/ck/rooms/{id}/code", (c) => {
 const L = require(`${__hooks}/ck-lib-all.js`);

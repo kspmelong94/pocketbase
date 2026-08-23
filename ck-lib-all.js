@@ -13,6 +13,18 @@ const lib = Object.assign(
   require(`${__hooks}/ck-penalties.js`)
 );
 
+// 파티 헬퍼 (P.* 네임스페이스로 노출)
+const PartyLib = require(`${__hooks}/party-lib.js`);
+lib.PFindUserParty = PartyLib.findUserParty;
+lib.PFindPendingInvites = PartyLib.findPendingInvites;
+lib.PBuildPartyView = PartyLib.buildPartyView;
+lib.PParseMembers = PartyLib.parseMembers;
+lib.PJoinedMembers = PartyLib.joinedMembers;
+lib.PGenCode = PartyLib.genCode;
+lib.PReopenPartiesForBattle = PartyLib.reopenPartiesForBattle;
+lib.PCancelUserQueue = PartyLib.cancelUserQueue;
+lib.PARTY_MAX = PartyLib.PARTY_MAX;
+
 // URL 쿼리 문자열 파서 (goja 에 URL API 가 없음)
 lib.CKParseQuery = function (url) {
   const q = {};

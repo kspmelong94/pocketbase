@@ -8,6 +8,14 @@ function CKDoSettlement(room, match, playerStats) {
   const settings = CKGetSettings();
   if (!settings) return { ok: false, error: "Settings not found" };
 
+  // 파티 상태 복원 (큐의 party_id 역추적)
+  try {
+    const PartyLib = require(`${__hooks}/party-lib.js`);
+    PartyLib.reopenPartiesForBattle(room.id);
+  } catch (e) {
+    /* 무시 */
+  }
+
   const eloK = settings.getInt("ck_elo_k") || 25;
   const season = room.getString("season") || CKGetCurrentSeason();
 
