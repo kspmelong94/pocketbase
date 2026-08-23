@@ -17,6 +17,10 @@ function parseMembers(raw) {
       return Array.isArray(p) ? p : [];
     }
     if (Array.isArray(raw)) return raw;
+    if (typeof raw === "object" && raw !== null) {
+      const arr = Object.values(raw).find(v => Array.isArray(v));
+      if (arr) return arr;
+    }
   } catch (e) {
     /* 무시 */
   }
